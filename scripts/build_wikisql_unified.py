@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Build a single 'perfect' WikiSQL SQLite DB from the original compressed dataset.
+Build a single WikiSQL SQLite DB from the original compressed dataset.
 
-What you get (output SQLite schema):
+What you get:
 - Many data tables: table_1_... copied as-is from train/dev/test (column names are the real headers)
 - questions(split, table_id, table_name, question, agg, sel_col_idx, conds_json, sql_text?)
 - wikisql_tables(table_name, split, table_id, header_json, types_json, n_rows, pretty_name, page_title, section_title, caption, page_id)
@@ -11,22 +11,19 @@ What you get (output SQLite schema):
 - v_tables_browse (view) exposing a "display_name" that uses pretty_name if available
 
 CLI:
-  python build_wikisql_unified.py [--src <URL-or-path>] [--out wikisql_all.sqlite]
-                                  [--skip-sql-text] [--validate-all] [--strict]
-                                  [--workdir <dir>]
+  python scripts/build_wikisql_unified.py [--src <URL-or-path>]
 
 Defaults:
   --src defaults to the canonical GitHub raw: https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2
+  Output: data/processed/wikisql/wikisql-v1.sqlite
 """
-
 import argparse
 import json
 import sqlite3
 import sys
 import tarfile
-import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 DEFAULT_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
 
@@ -56,51 +53,29 @@ def download_to_bytes(url: str) -> bytes:
 def extract_tar_bz2(archive: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, mode="r:bz2") as tar:
-        tar.extractall(path=dest_dir)
+        tar.extractall(path=dest_dir, filter='data')
     return dest_dir
 
 
 def quote_ident(name: str) -> str:
-    # SQLite identifier quoting with double-quotes
     return '"' + str(name).replace('"', '""') + '"'
 
 
 def quote_literal(val: str) -> str:
-    # SQLite string literal quoting with single quotes
     return "'" + str(val).replace("'", "''") + "'"
 
 
-# Aggregation and operator mappings per WikiSQL
-AGG_MAP = {
-    0: None,      # no aggregation
-    1: "MAX",
-    2: "MIN",
-    3: "COUNT",
-    4: "SUM",
-    5: "AVG",
-}
-# Canonical ops; extend if encountered
+AGG_MAP = {0: None, 1: "MAX", 2: "MIN", 3: "COUNT", 4: "SUM", 5: "AVG"}
 OP_MAP_BASE = {0: "=", 1: ">", 2: "<"}
 OP_EXTS = {3: ">=", 4: "<=", 5: "!="}
 
 
 def derived_table_name(table_id: str) -> str:
-    # Deterministic mapping used by the shipped DBs:
-    # "1-10015132-11" -> "table_1_10015132_11"
     return "table_" + table_id.replace("-", "_")
 
 
-def build_unified_db(
-    extracted_root: Path,
-    out_db: Path,
-    skip_sql_text: bool = False,
-    validate_all: bool = False,
-    strict: bool = False,
-) -> dict:
-    """
-    Build a unified SQLite DB from the extracted WikiSQL dataset.
-    Returns a summary dict; raises if strict and validation errors occur.
-    """
+def validate_split_files(extracted_root: Path) -> Dict[str, Dict[str, Path]]:
+    """Validate that all required split files exist and return their paths."""
     data_dir = extracted_root / "data"
     if not data_dir.exists():
         raise RuntimeError(f"Could not find 'data/' directory under extracted root: {extracted_root}")
@@ -114,18 +89,23 @@ def build_unified_db(
         if not dbp.exists() or not tbl.exists() or not exm.exists():
             raise RuntimeError(f"Missing files for split '{s}'. Expected: {dbp}, {tbl}, {exm}")
         split_files[s] = {"db": dbp, "tables": tbl, "examples": exm}
+    return split_files
 
+
+def setup_database(out_db: Path) -> sqlite3.Connection:
+    """Create and configure the output database with schema."""
     if out_db.exists():
         out_db.unlink()
 
-    # Create destination DB
+    # Ensure the output directory exists
+    out_db.parent.mkdir(parents=True, exist_ok=True)
+
     conn = sqlite3.connect(str(out_db))
     conn.execute("PRAGMA journal_mode = MEMORY;")
     conn.execute("PRAGMA synchronous = OFF;")
     conn.execute("PRAGMA temp_store = MEMORY;")
     conn.execute("PRAGMA cache_size = -200000;")
 
-    # Base schema (extra metadata columns for "pretty name" & page info)
     conn.executescript("""
         CREATE TABLE wikisql_tables (
             table_name TEXT PRIMARY KEY,
@@ -134,11 +114,11 @@ def build_unified_db(
             header_json TEXT NOT NULL,
             types_json TEXT NOT NULL,
             n_rows INTEGER NOT NULL,
-            pretty_name TEXT,         -- optional: tables.jsonl 'name'
-            page_title TEXT,          -- optional
-            section_title TEXT,       -- optional
-            caption TEXT,             -- optional
-            page_id TEXT              -- optional
+            pretty_name TEXT,
+            page_title TEXT,
+            section_title TEXT,
+            caption TEXT,
+            page_id TEXT
         );
 
         CREATE TABLE questions (
@@ -157,13 +137,13 @@ def build_unified_db(
         CREATE INDEX idx_questions_split    ON questions(split);
         CREATE INDEX idx_questions_table_id ON questions(table_id);
 
-        CREATE TABLE op_map (
-            op_idx INTEGER PRIMARY KEY,
-            symbol TEXT NOT NULL
-        );
+        CREATE TABLE op_map (op_idx INTEGER PRIMARY KEY, symbol TEXT NOT NULL);
     """)
+    return conn
 
-    # Copy all data tables as-is into main
+
+def copy_tables_from_splits(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> None:
+    """Copy all data tables from split databases to the unified database."""
     seen_tables = set()
     for split, files in split_files.items():
         alias = f"{split}_db"
@@ -178,29 +158,28 @@ def build_unified_db(
             conn.execute(f'CREATE TABLE {quote_ident(tname)} AS SELECT * FROM {alias}.{quote_ident(tname)};')
         conn.execute(f"DETACH DATABASE {alias}")
 
-    # Parse tables.jsonl (metadata) and insert into wikisql_tables
+
+def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> Dict[str, List[str]]:
+    """Process table metadata from JSONL files and return table headers."""
     table_headers: Dict[str, List[str]] = {}
     table_types: Dict[str, List[str]] = {}
-    pretty_name_by_table: Dict[str, Optional[str]] = {}
 
     for split, files in split_files.items():
         with files["tables"].open("r", encoding="utf-8") as f:
             count = 0
             for line in f:
                 obj = json.loads(line)
-                tid = obj["id"]  # e.g., "1-10015132-11"
+                tid = obj["id"]
                 tname = derived_table_name(tid)
                 header = obj.get("header", [])
                 types = obj.get("types", [])
                 table_headers[tname] = header
                 table_types[tname] = types
-                # Optional fields
                 pretty_name = obj.get("name")
                 page_title = obj.get("page_title")
                 section_title = obj.get("section_title")
                 caption = obj.get("caption")
                 page_id = obj.get("page_id")
-                pretty_name_by_table[tname] = pretty_name
 
                 try:
                     n_rows = conn.execute(f"SELECT COUNT(*) FROM {quote_ident(tname)}").fetchone()[0]
@@ -218,8 +197,11 @@ def build_unified_db(
                 )
                 count += 1
         eprint(f"[{split}] registered {count} table metadata rows")
+    return table_headers
 
-    # Audit operator indices across all examples, then persist op_map
+
+def build_operator_mapping(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> Dict[int, str]:
+    """Build and populate the operator mapping table."""
     observed_ops = set()
     for split, files in split_files.items():
         with files["examples"].open("r", encoding="utf-8") as f:
@@ -233,38 +215,41 @@ def build_unified_db(
     op_map = dict(OP_MAP_BASE)
     for op_idx in sorted(observed_ops):
         if op_idx not in op_map:
-            op_map[op_idx] = OP_EXTS.get(op_idx, "=")  # fallback for unknown
+            op_map[op_idx] = OP_EXTS.get(op_idx, "=")
     for k, v in sorted(op_map.items()):
         conn.execute("INSERT INTO op_map (op_idx, symbol) VALUES (?,?)", (k, v))
+    return op_map
 
-    # Helper to reconstruct SQL text (if not skipping)
-    def build_sql_text(table_name: str, sel_idx: int, agg: int, conds: list) -> str:
-        header = table_headers.get(table_name)
-        if header is None:
-            raise RuntimeError(f"No header known for table {table_name}")
-        if not (0 <= sel_idx < len(header)):
-            raise RuntimeError(f"sel_col_idx {sel_idx} out of bounds for table {table_name} (cols={len(header)})")
 
-        sel_col = header[sel_idx]
-        agg_name = AGG_MAP.get(agg)
-        sel_expr = f"{quote_ident(sel_col)}" if agg_name is None else f"{agg_name}({quote_ident(sel_col)})"
+def build_sql_text(table_name: str, sel_idx: int, agg: int, conds: list,
+                   table_headers: Dict[str, List[str]], op_map: Dict[int, str]) -> str:
+    """Build SQL text from structured query components."""
+    header = table_headers.get(table_name)
+    if header is None:
+        raise RuntimeError(f"No header known for table {table_name}")
+    if not (0 <= sel_idx < len(header)):
+        raise RuntimeError(f"sel_col_idx {sel_idx} out of bounds for table {table_name}")
+    sel_col = header[sel_idx]
+    agg_name = AGG_MAP.get(agg)
+    sel_expr = f"{quote_ident(sel_col)}" if agg_name is None else f"{agg_name}({quote_ident(sel_col)})"
+    where = []
+    for c in conds or []:
+        if not isinstance(c, list) or len(c) < 3:
+            continue
+        col_idx, op_idx, value = int(c[0]), int(c[1]), c[2]
+        if not (0 <= col_idx < len(header)):
+            raise RuntimeError(f"cond col_idx {col_idx} out of bounds for table {table_name}")
+        op = op_map.get(op_idx)
+        if op is None:
+            raise RuntimeError(f"Unknown operator index {op_idx}")
+        where.append(f"{quote_ident(header[col_idx])} {op} {quote_literal(str(value))}")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    return f"SELECT {sel_expr} FROM {quote_ident(table_name)}{where_sql};"
 
-        where = []
-        for c in conds or []:
-            if not isinstance(c, list) or len(c) < 3:
-                continue
-            col_idx, op_idx, value = int(c[0]), int(c[1]), c[2]
-            if not (0 <= col_idx < len(header)):
-                raise RuntimeError(f"cond col_idx {col_idx} out of bounds for table {table_name}")
-            op = op_map.get(op_idx)
-            if op is None:
-                raise RuntimeError(f"Unknown operator index {op_idx}")
-            where.append(f"{quote_ident(header[col_idx])} {op} {quote_literal(str(value))}")
 
-        where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-        return f"SELECT {sel_expr} FROM {quote_ident(table_name)}{where_sql};"
-
-    # Load examples and insert questions
+def process_questions(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]],
+                     table_headers: Dict[str, List[str]], op_map: Dict[int, str]) -> int:
+    """Process questions from JSONL files and return total count inserted."""
     inserted = 0
     for split, files in split_files.items():
         eprint(f"[{split}] ingesting questions…")
@@ -278,11 +263,7 @@ def build_unified_db(
                 sel = int(sql_obj.get("sel", 0))
                 agg = int(sql_obj.get("agg", 0))
                 conds = sql_obj.get("conds", [])
-
-                sql_text = None
-                if not skip_sql_text:
-                    sql_text = build_sql_text(tname, sel, agg, conds)
-
+                sql_text = build_sql_text(tname, sel, agg, conds, table_headers, op_map)
                 conn.execute(
                     "INSERT INTO questions (split, table_id, table_name, question, agg, sel_col_idx, conds_json, sql_text) "
                     "VALUES (?,?,?,?,?,?,?,?)",
@@ -290,8 +271,11 @@ def build_unified_db(
                 )
                 inserted += 1
         eprint(f"[{split}] inserted questions: (cumulative) {inserted}")
+    return inserted
 
-    # Convenience views
+
+def create_views(conn: sqlite3.Connection) -> None:
+    """Create database views for easier querying."""
     conn.executescript("""
         CREATE VIEW v_questions_with_schema AS
         SELECT q.*, wt.header_json, wt.types_json, wt.n_rows
@@ -311,94 +295,102 @@ def build_unified_db(
         FROM wikisql_tables;
     """)
 
-    # Summaries
-    num_questions = conn.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
-    num_tables = conn.execute("SELECT COUNT(*) FROM wikisql_tables").fetchone()[0]
-    sum_rows = conn.execute("SELECT SUM(n_rows) FROM wikisql_tables").fetchone()[0]
 
-    # Validation
+def validate_queries(conn: sqlite3.Connection, table_headers: Dict[str, List[str]], op_map: Dict[int, str]) -> int:
+    """Validate all reconstructed queries by executing them."""
+    eprint("Validating all reconstructed queries by executing them…")
     validation_errors = 0
-    if validate_all:
-        eprint("Validating all reconstructed queries by executing them…")
-        # If sql_text was skipped, reconstruct on the fly for validation
-        sel = conn.execute("SELECT id, table_name, agg, sel_col_idx, conds_json, sql_text FROM questions").fetchall()
-        for qid, tname, agg, sel_idx, conds_json, sql_text in sel:
-            if sql_text is None:
-                # reconstruct for validation
-                conds = json.loads(conds_json)
-                try:
-                    sql_text = build_sql_text(tname, int(sel_idx), int(agg), conds)
-                except Exception:
-                    validation_errors += 1
-                    if strict:
-                        raise
-                    continue
+    sel = conn.execute("SELECT id, table_name, agg, sel_col_idx, conds_json, sql_text FROM questions").fetchall()
+    for qid, tname, agg, sel_idx, conds_json, sql_text in sel:
+        if sql_text is None:
+            conds = json.loads(conds_json)
             try:
-                conn.execute(sql_text).fetchone()
+                sql_text = build_sql_text(tname, int(sel_idx), int(agg), conds, table_headers, op_map)
             except Exception:
                 validation_errors += 1
-                if strict:
-                    raise
+                raise
+        try:
+            conn.execute(sql_text).fetchone()
+        except Exception:
+            validation_errors += 1
+            raise
+    return validation_errors
 
-    conn.commit()
-    conn.close()
 
-    if strict and validation_errors > 0:
-        raise RuntimeError(f"Validation failed with {validation_errors} errors.")
+def build_unified_db(extracted_root: Path, out_db: Path) -> dict:
+    """Build unified WikiSQL SQLite database from extracted data."""
+    split_files = validate_split_files(extracted_root)
+    conn = setup_database(out_db)
 
-    return {
-        "out_db": str(out_db),
-        "total_questions": int(num_questions),
-        "total_tables": int(num_tables),
-        "total_rows_across_tables": int(sum_rows) if sum_rows is not None else 0,
-        "validation_errors": int(validation_errors),
-        "sql_text_materialized": (not skip_sql_text),
-    }
+    try:
+        copy_tables_from_splits(conn, split_files)
+        table_headers = process_table_metadata(conn, split_files)
+        op_map = build_operator_mapping(conn, split_files)
+        total_questions = process_questions(conn, split_files, table_headers, op_map)
+        create_views(conn)
+        validation_errors = validate_queries(conn, table_headers, op_map)
+
+        num_tables = conn.execute("SELECT COUNT(*) FROM wikisql_tables").fetchone()[0]
+        sum_rows = conn.execute("SELECT SUM(n_rows) FROM wikisql_tables").fetchone()[0]
+
+        conn.commit()
+
+        if validation_errors > 0:
+            raise RuntimeError(f"Validation failed with {validation_errors} errors.")
+
+        return {
+            "out_db": str(out_db),
+            "total_questions": int(total_questions),
+            "total_tables": int(num_tables),
+            "total_rows_across_tables": int(sum_rows) if sum_rows is not None else 0,
+            "validation_errors": int(validation_errors),
+        }
+    finally:
+        conn.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Build unified WikiSQL SQLite DB from compressed source.")
     parser.add_argument("--src", default=DEFAULT_URL,
                         help=f"URL or local path to the WikiSQL data archive (data.tar.bz2). Default: {DEFAULT_URL}")
-    parser.add_argument("--out", default="wikisql_all.sqlite",
-                        help="Output SQLite path (default: wikisql_all.sqlite)")
-    parser.add_argument("--workdir", default=None,
-                        help="Optional working directory (defaults to a temp dir)")
-    parser.add_argument("--skip-sql-text", action="store_true",
-                        help="Do not materialize sql_text in questions (saves space).")
-    parser.add_argument("--validate-all", action="store_true",
-                        help="Execute all reconstructed queries to validate.")
-    parser.add_argument("--strict", action="store_true",
-                        help="If set with --validate-all, fail the build on any validation error.")
     args = parser.parse_args()
 
-    out_db = Path(args.out).resolve()
-    workdir = Path(args.workdir).resolve() if args.workdir else Path(tempfile.mkdtemp(prefix="wikisql_build_"))
+    out_db = Path("data/processed/wikisql/wikisql-v1.sqlite").resolve()
+    workdir = Path("data/raw/wikisql").resolve()
 
-    # 1) Acquire archive
     if is_url(args.src):
-        archive_bytes = download_to_bytes(args.src)
         archive_path = workdir / "data.tar.bz2"
-        archive_path.write_bytes(archive_bytes)
+        # Check if archive already exists before downloading
+        if archive_path.exists():
+            eprint(f"Using existing archive: {archive_path}")
+        else:
+            workdir.mkdir(parents=True, exist_ok=True)
+            archive_bytes = download_to_bytes(args.src)
+            archive_path.write_bytes(archive_bytes)
+            eprint(f"Downloaded archive to: {archive_path}")
     else:
         archive_path = Path(args.src).expanduser().resolve()
         if not archive_path.exists():
             raise FileNotFoundError(f"--src path not found: {archive_path}")
 
-    # 2) Extract
     eprint(f"Extracting archive to: {workdir}")
     extract_tar_bz2(archive_path, workdir)
 
-    # 3) Build
-    summary = build_unified_db(
-        extracted_root=workdir,
-        out_db=out_db,
-        skip_sql_text=args.skip_sql_text,
-        validate_all=args.validate_all,
-        strict=args.strict,
-    )
+    summary = build_unified_db(extracted_root=workdir, out_db=out_db)
 
-    # 4) Report
+    meta_path = Path(str(out_db) + ".meta.json")
+    meta = {
+        "dataset": "wikisql",
+        "version": "1.0.0",
+        "source_url": DEFAULT_URL if is_url(args.src) else str(args.src),
+        "counts": {
+            "questions": summary["total_questions"],
+            "tables": summary["total_tables"],
+            "rows_total": summary["total_rows_across_tables"],
+        }
+    }
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
     print(json.dumps(summary, indent=2))
 
 

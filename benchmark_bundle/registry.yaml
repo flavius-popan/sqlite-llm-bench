@@ -1,0 +1,5 @@
+datasets:
+  wikisql:
+    version: "1.0.0"
+    path: "data/processed/wikisql/wikisql-v1.sqlite"
+    meta: "data/processed/wikisql/wikisql-v1.meta.json"

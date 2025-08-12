@@ -31,3 +31,14 @@ A benchmark suite for evaluating Large Language Models on SQLite Text-to-SQL tas
 - datasets/wikisql is included under MIT (preserve their LICENSE file in that folder).
 - datasets/spider_small is included under CC BY-SA 4.0 (preserve their LICENSE file).
 - BIRD is not redistributed; use the download script or obtain BIRD manually.
+
+
+---
+## Data locations
+
+Large artifacts live under `data/` (git-ignored). Use `DATA_DIR` env var to override the location.
+
+Build WikiSQL unified DB:
+```bash
+python scripts/build_wikisql_unified.py
+```
