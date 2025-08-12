@@ -52,8 +52,7 @@ def extract_tar_bz2(archive: Path, dest_dir: Path) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     # Use tarfile's member filtering to avoid path traversal; extract deterministically
     with tarfile.open(archive, mode="r:bz2") as tar:
-        # Sort members by name for deterministic extraction order (not strictly required,
-        # but keeps this process fully reproducible across tar implementations)
+        # Sort members by name for deterministic extraction order
         members = sorted(tar.getmembers(), key=lambda m: m.name)
         def _safe(member: tarfile.TarInfo):
             # Disallow absolute paths and parent directory traversal
@@ -82,7 +81,6 @@ def sanitize_column_name(name: str) -> str:
     """Convert a human-readable column name to a valid SQL identifier with consistent snake_case."""
     import re
 
-    # Convert to string and handle None/empty cases
     if not name:
         return 'unnamed_col'
 
@@ -90,7 +88,6 @@ def sanitize_column_name(name: str) -> str:
     if not name:
         return 'unnamed_col'
 
-    # Handle superscript/exponent characters early
     exponent_replacements = {
         '¹': '_1',
         '²': '_squared',
@@ -103,38 +100,26 @@ def sanitize_column_name(name: str) -> str:
         '⁹': '_9',
         '⁰': '_0',
     }
-
     for exponent, replacement in exponent_replacements.items():
         name = name.replace(exponent, replacement)
 
-    # Handle year patterns early, before other processing
-    # Convert standalone 4-digit years to yr_ prefix
     if re.match(r'^\d{4}$', name):
         return 'yr_' + name
 
-    # Handle year ranges like "2007-08" or "2007/08"
     name = re.sub(r'\b(\d{4})[\-/](\d{2})\b', r'yr_\1_\2', name)
-
-    # Handle other year patterns like "2020 Season"
     name = re.sub(r'\b(\d{4})\b', r'yr_\1', name)
 
-    # Handle specific patterns first (order matters)
-    # Handle "Pick #" -> "pick_number"
     name = re.sub(r'\b(\w+)\s*#(\d+)', r'\1_number_\2', name, flags=re.IGNORECASE)
     name = re.sub(r'\b(\w+)\s*#\s*$', r'\1_number', name, flags=re.IGNORECASE)
 
-    # Handle "% something" -> "percent_something"
     name = re.sub(r'%\s+', 'percent_', name, flags=re.IGNORECASE)
     name = re.sub(r'^%\s*', 'percent_', name, flags=re.IGNORECASE)
 
-    # Handle "# of something" -> "num_of_something"
     name = re.sub(r'#\s*of\s+', 'num_of_', name, flags=re.IGNORECASE)
 
-    # Handle "No." -> "number"
     name = re.sub(r'\bno\.\s*', 'number_', name, flags=re.IGNORECASE)
     name = re.sub(r'\bno\s+of\s+', 'number_of_', name, flags=re.IGNORECASE)
 
-    # Handle common abbreviations and words (specific patterns first)
     replacements = {
         r'\btotal\s+w[–\-]l\b': 'total_wins_losses',
         r'\bsingles\s+w[–\-]l\b': 'singles_wins_losses',
@@ -159,38 +144,20 @@ def sanitize_column_name(name: str) -> str:
         r'\bpct\b': 'percent',
         r'\bsemi[_\s\-]finalist\b': 'semi_finalist',
     }
-
-    # Apply pattern replacements (case insensitive)
     for pattern, replacement in replacements.items():
         name = re.sub(pattern, replacement, name, flags=re.IGNORECASE)
 
-    # Handle parentheses - extract meaningful content and convert to underscores
-    # "Population (thousands)" -> "population_thousands"
     name = re.sub(r'\s*\(\s*([^)]+)\s*\)', r'_\1', name)
-
-    # Convert camelCase and PascalCase to snake_case
-    # Insert underscore before uppercase letters that follow lowercase letters
     name = re.sub(r'([a-z])([A-Z])', r'\1_\2', name)
-
-    # Convert to lowercase
     name = name.lower()
-
-    # Replace problematic characters with underscores, but preserve periods and apostrophes
     name = re.sub(r'[^\w\.\']', '_', name)
-    # Remove periods and apostrophes without replacement
     name = re.sub(r'[\.\']', '', name)
-
-    # Remove consecutive underscores
     name = re.sub(r'_+', '_', name)
-
-    # Remove leading/trailing underscores
     name = name.strip('_')
 
-    # Ensure it doesn't start with a number (for non-year cases)
     if name and name[0].isdigit() and not name.startswith('yr_'):
         name = 'col_' + name
 
-    # Handle empty result
     if not name:
         name = 'unnamed_col'
 
@@ -254,9 +221,9 @@ def validate_split_files(extracted_root: Path) -> Dict[str, Dict[str, Path]]:
     return split_files
 
 
-def setup_work_db(work_db: Path) -> sqlite3.Connection:
+def setup_wip_db(wip_db: Path) -> sqlite3.Connection:
     """
-    Create the WORK database (metadata only; no raw data tables are copied here).
+    Create the WIP database (metadata only; no raw data tables are copied here).
     It holds:
       - wikisql_tables (metadata)
       - questions (with reconstructed sql_text)
@@ -264,13 +231,13 @@ def setup_work_db(work_db: Path) -> sqlite3.Connection:
       - views for scoring
       - where_matches (ambiguity boost results)
     """
-    if work_db.exists():
-        work_db.unlink()
+    if wip_db.exists():
+        wip_db.unlink()
 
-    work_db.parent.mkdir(parents=True, exist_ok=True)
+    wip_db.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(work_db))
-    # Deterministic + fast-enough settings (durability is not critical in work DB)
+    conn = sqlite3.connect(str(wip_db))
+    # Deterministic + fast-enough settings (durability is not critical in wip DB)
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")   # stable journaling
     conn.execute("PRAGMA synchronous = NORMAL;")
@@ -319,9 +286,8 @@ def setup_work_db(work_db: Path) -> sqlite3.Connection:
 def attach_split_aliases(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> Dict[str, str]:
     """Attach each split DB under a deterministic alias."""
     aliases = {}
-    for split in sorted(split_files.keys()):  # deterministic order: dev, test, train -> we'll fix to a stable list
+    for split in sorted(split_files.keys()):
         pass
-    # fixed order for determinism
     for split in ["dev", "test", "train"]:
         files = split_files[split]
         alias = f"{split}_db"
@@ -331,7 +297,6 @@ def attach_split_aliases(conn: sqlite3.Connection, split_files: Dict[str, Dict[s
 
 
 def detach_split_aliases(conn: sqlite3.Connection, aliases: Dict[str, str]) -> None:
-    # detach in reverse for neatness
     for split in ["train", "test", "dev"]:
         alias = aliases.get(split)
         if alias:
@@ -341,7 +306,7 @@ def detach_split_aliases(conn: sqlite3.Connection, aliases: Dict[str, str]) -> N
 def build_operator_mapping(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> Dict[int, str]:
     """Build and populate the operator mapping table from all splits deterministically."""
     observed_ops = set()
-    for split in ["dev", "test", "train"]:  # fixed order read
+    for split in ["dev", "test", "train"]:
         with split_files[split]["examples"].open("r", encoding="utf-8") as f:
             for line in f:
                 obj = json.loads(line)
@@ -368,14 +333,13 @@ def build_sql_text(table_name: str, sel_idx: int, agg: int, conds: list,
     if not (0 <= sel_idx < len(header)):
         raise RuntimeError(f"sel_col_idx {sel_idx} out of bounds for table {table_name}")
 
-    # Convert headers to sanitized column names that match the table structure
     sanitized_headers = ensure_unique_column_names(header)
 
     sel_col = sanitized_headers[sel_idx]
     agg_name = AGG_MAP.get(agg)
     sel_expr = f"{quote_ident(sel_col)}" if agg_name is None else f"{agg_name}({quote_ident(sel_col)})"
     where = []
-    for c in conds or []:
+    for c in (conds or []):
         if not isinstance(c, list) or len(c) < 3:
             continue
         col_idx, op_idx, value = int(c[0]), int(c[1]), c[2]
@@ -395,16 +359,14 @@ def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict
     Do NOT copy raw data tables here. n_rows is computed by counting in the attached split DBs.
     Returns: table_headers[table_name] = [col1, col2, ...]
     """
-    # Attach split DBs to count rows deterministically from the source DBs
     aliases = attach_split_aliases(conn, split_files)
     table_headers: Dict[str, List[str]] = {}
     table_types: Dict[str, List[str]] = {}
 
-    for split in ["dev", "test", "train"]:  # fixed order
+    for split in ["dev", "test", "train"]:
         files = split_files[split]
         alias = aliases[split]
         count = 0
-        # deterministic JSONL read order (file order is already stable)
         with files["tables"].open("r", encoding="utf-8") as f:
             for line in f:
                 obj = json.loads(line)
@@ -419,7 +381,6 @@ def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict
                 section_title = obj.get("section_title")
                 caption = obj.get("caption")
                 page_id = obj.get("page_id")
-                # count rows directly in the split DB
                 try:
                     n_rows = conn.execute(f'SELECT COUNT(*) FROM {alias}.{quote_ident(tname)}').fetchone()[0]
                 except sqlite3.OperationalError as e:
@@ -438,7 +399,6 @@ def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict
                 count += 1
         eprint(f"[{split}] registered {count} table metadata rows")
 
-    # Ensure all transactions are committed before detaching
     conn.commit()
     detach_split_aliases(conn, aliases)
     return table_headers
@@ -448,7 +408,7 @@ def process_questions(conn: sqlite3.Connection, split_files: Dict[str, Dict[str,
                       table_headers: Dict[str, List[str]], op_map: Dict[int, str]) -> int:
     """Parse *.jsonl examples across splits, reconstruct sql_text, insert into questions deterministically."""
     inserted = 0
-    for split in ["dev", "test", "train"]:  # fixed order
+    for split in ["dev", "test", "train"]:
         eprint(f"[{split}] ingesting questions…")
         with split_files[split]["examples"].open("r", encoding="utf-8") as f:
             for line in f:
@@ -460,7 +420,6 @@ def process_questions(conn: sqlite3.Connection, split_files: Dict[str, Dict[str,
                 sel = int(sql_obj.get("sel", 0))
                 agg = int(sql_obj.get("agg", 0))
                 conds = sql_obj.get("conds", [])
-                # ensure conds JSON is deterministically serialized
                 sql_text = build_sql_text(tname, sel, agg, conds, table_headers, op_map)
                 conn.execute(
                     "INSERT INTO questions (split, table_name, question, agg, sel_col_idx, conds_json, sql_text) "
@@ -475,7 +434,6 @@ def process_questions(conn: sqlite3.Connection, split_files: Dict[str, Dict[str,
 def create_scoring_views(conn: sqlite3.Connection) -> None:
     """Create deterministic, pure-SQL feature and scoring views."""
     conn.executescript(f"""
-        -- Join question rows with schema bits we need
         DROP VIEW IF EXISTS v_questions_with_schema;
         CREATE VIEW v_questions_with_schema AS
         SELECT q.*, wt.header_json, wt.types_json, wt.n_rows
@@ -484,7 +442,6 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
           ON wt.table_name = q.table_name
          AND wt.split = q.split;
 
-        -- Operator stats (rarity)
         DROP TABLE IF EXISTS op_stats;
         CREATE TABLE op_stats AS
         SELECT CAST(json_extract(je.value, '$[1]') AS INT) AS op_idx,
@@ -493,7 +450,6 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
         GROUP BY op_idx
         ORDER BY op_idx;
 
-        -- Aggregation stats (rarity)
         DROP TABLE IF EXISTS agg_stats;
         CREATE TABLE agg_stats AS
         SELECT agg, COUNT(*) AS cnt
@@ -501,14 +457,12 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
         GROUP BY agg
         ORDER BY agg;
 
-        -- Totals for inverse-frequency style weights
         DROP TABLE IF EXISTS totals;
         CREATE TABLE totals AS
         SELECT
           (SELECT COALESCE(SUM(cnt),0) FROM op_stats)  AS total_op_cnt,
           (SELECT COALESCE(SUM(cnt),0) FROM agg_stats) AS total_agg_cnt;
 
-        -- Per-question lightweight features
         DROP VIEW IF EXISTS v_q_features;
         CREATE VIEW v_q_features AS
         SELECT
@@ -536,7 +490,6 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
              + 1) AS q_words
         FROM questions q;
 
-        -- Add schema-derived fields
         DROP VIEW IF EXISTS v_q_with_schema;
         CREATE VIEW v_q_with_schema AS
         SELECT
@@ -546,7 +499,6 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
         FROM v_q_features f
         JOIN v_questions_with_schema vqs ON vqs.id = f.id;
 
-        -- Deterministic difficulty score (pure SQL, no ambiguity yet)
         DROP VIEW IF EXISTS v_q_difficulty;
         CREATE VIEW v_q_difficulty AS
         SELECT
@@ -570,7 +522,7 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
     """
     Ambiguity boost: for each question, execute a COUNT(*) version of its sql_text
     against its source split DB. We prefix the table with the correct attached alias
-    to avoid copying raw tables into the work DB.
+    to avoid copying raw tables into the wip DB.
     """
     aliases = attach_split_aliases(conn, split_files)
     cur = conn.execute("SELECT id, split, table_name, sql_text FROM questions ORDER BY id ASC")
@@ -579,14 +531,9 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
 
     for qid, split, table_name, sql_text in rows:
         alias = aliases[split]
-        # Replace SELECT ... FROM ... with SELECT COUNT(*) FROM <alias>.<table>
-        # 1) Ensure FROM references the qualified table
         from_pat = re.compile(r'(?is)\bfrom\s+' + re.escape(f'"{table_name}"'))
         qualified_from = f'FROM {alias}.{quote_ident(table_name)}'
         sql_qualified = from_pat.sub(qualified_from, sql_text, count=1)
-
-        # 2) Replace projection with COUNT(*) - use a more robust approach
-        # Find the position of "FROM" that's not inside quotes
 
         i = 0
         in_quotes = False
@@ -601,7 +548,6 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
                 in_quotes = False
                 quote_char = None
             elif not in_quotes and sql_qualified[i:i+4].upper() == 'FROM' and (i == 0 or sql_qualified[i-1].isspace()) and (i+4 >= len(sql_qualified) or sql_qualified[i+4].isspace()):
-                # Found FROM keyword outside quotes
                 count_sql = 'SELECT COUNT(*) ' + sql_qualified[i:]
                 break
             i += 1
@@ -616,11 +562,9 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
                      (int(qid), int(cnt)))
         updated += 1
 
-        # Commit periodically to avoid lock issues
         if updated % 1000 == 0:
             conn.commit()
 
-    # Final commit before detaching
     conn.commit()
     detach_split_aliases(conn, aliases)
     return updated
@@ -651,12 +595,10 @@ def select_top500(conn: sqlite3.Connection) -> None:
         SELECT DISTINCT wt.*
         FROM top500_questions t
         JOIN wikisql_tables wt ON wt.table_name = t.table_name AND wt.split = t.split;
-
-
     """)
 
 
-def build_final_db(work_conn: sqlite3.Connection,
+def build_final_db(wip_conn: sqlite3.Connection,
                    split_files: Dict[str, Dict[str, Path]],
                    out_db: Path) -> Dict[str, int]:
     """
@@ -672,11 +614,10 @@ def build_final_db(work_conn: sqlite3.Connection,
     try:
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA synchronous = FULL;")  # durable final artifact
+        conn.execute("PRAGMA synchronous = FULL;")
         conn.execute("PRAGMA temp_store = MEMORY;")
         conn.execute("PRAGMA cache_size = -200000;")
 
-        # Schema
         conn.executescript("""
             CREATE TABLE questions (
                 id INTEGER PRIMARY KEY,
@@ -730,15 +671,12 @@ def build_final_db(work_conn: sqlite3.Connection,
             ORDER BY difficulty_score_plus DESC;
         """)
 
-        # Copy metadata from work DB
-        # (Use deterministic column order to avoid surprises.)
-        cols_q = [c[1] for c in work_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
-        cols_w = [c[1] for c in work_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
+        cols_q = [c[1] for c in wip_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
+        cols_w = [c[1] for c in wip_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
 
-        q_rows = work_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
-        w_rows = work_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
+        q_rows = wip_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
+        w_rows = wip_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
 
-        # Insert into final schema (using dynamic column lists)
         q_placeholders = ','.join(['?'] * len(cols_q))
         conn.executemany(f"""
             INSERT INTO questions ({', '.join(map(quote_ident, cols_q))})
@@ -751,16 +689,13 @@ def build_final_db(work_conn: sqlite3.Connection,
             VALUES ({w_placeholders})
         """, w_rows)
 
-        # Copy the actual referenced data tables from their split DBs
-        # Attach split DBs
         aliases = {}
         for split in ["dev", "test", "train"]:
             alias = f"{split}_db"
             conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(split_files[split]["db"]),))
             aliases[split] = alias
 
-        # For each distinct (split, table_name), materialize the table into final DB
-        tables = work_conn.execute("""
+        tables = wip_conn.execute("""
             SELECT split, table_name
             FROM top500_tables
             ORDER BY split ASC, table_name ASC
@@ -769,29 +704,21 @@ def build_final_db(work_conn: sqlite3.Connection,
         for split, table_name in tables:
             alias = aliases[split]
 
-            # Get header information from work database
-            header_json = work_conn.execute(
+            header_json = wip_conn.execute(
                 "SELECT header_json FROM top500_tables WHERE table_name = ?",
                 (table_name,)
             ).fetchone()[0]
             headers = json.loads(header_json)
 
-            # Get source table structure
             source_columns = conn.execute(f"PRAGMA {alias}.table_info({quote_ident(table_name)})").fetchall()
-
-            # Create proper column names
             proper_column_names = ensure_unique_column_names(headers)
 
-            # Handle case where we have more/fewer headers than actual columns
             if len(proper_column_names) != len(source_columns):
                 eprint(f"Warning: Header count mismatch for {table_name}. Headers: {len(headers)}, Columns: {len(source_columns)}")
-                # Pad with generic names if we have more columns than headers
                 while len(proper_column_names) < len(source_columns):
                     proper_column_names.append(f"col_{len(proper_column_names)}")
-                # Truncate if we have more headers than columns
                 proper_column_names = proper_column_names[:len(source_columns)]
 
-            # Build CREATE TABLE statement with proper column names and types
             column_defs = []
             for i, (cid, old_name, type_name, notnull, default, pk) in enumerate(source_columns):
                 new_name = quote_ident(proper_column_names[i])
@@ -800,7 +727,6 @@ def build_final_db(work_conn: sqlite3.Connection,
             create_sql = f"CREATE TABLE {quote_ident(table_name)} ({', '.join(column_defs)})"
             conn.execute(create_sql)
 
-            # Insert data with column mapping (source columns are col0, col1, etc.)
             old_columns = [f"col{i}" for i in range(len(source_columns))]
             conn.execute(f"""
                 INSERT INTO {quote_ident(table_name)}
@@ -808,14 +734,11 @@ def build_final_db(work_conn: sqlite3.Connection,
                 FROM {alias}.{quote_ident(table_name)}
             """)
 
-        # Commit before detaching to prevent lock issues
         conn.commit()
 
-        # Detach
         for split in ["train", "test", "dev"]:
             conn.execute(f"DETACH DATABASE {aliases[split]}")
 
-        # Finalize
         conn.commit()
 
         stats = {
@@ -838,7 +761,6 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
     conn.execute("PRAGMA foreign_keys = ON;")
 
     try:
-        # Get all questions with their SQL queries
         questions = conn.execute("""
             SELECT id, table_name, sql_text, split
             FROM questions
@@ -859,19 +781,15 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
             validation_results["tables_tested"].add(table_name)
             validation_results["splits"][split] += 1
 
-            # Categorize query type
             if " AVG(" in sql_text or " SUM(" in sql_text or " MIN(" in sql_text or " MAX(" in sql_text or " COUNT(" in sql_text:
                 validation_results["query_types"]["SELECT_AGG"] += 1
             else:
                 validation_results["query_types"]["SELECT"] += 1
 
             try:
-                # Execute the query
                 result = conn.execute(sql_text).fetchall()
                 validation_results["successful_queries"] += 1
 
-                # Additional validation: check that result structure makes sense
-                # Only warn about multiple rows for aggregation queries (which should return single values)
                 is_agg_query = " AVG(" in sql_text or " SUM(" in sql_text or " MIN(" in sql_text or " MAX(" in sql_text or " COUNT(" in sql_text
                 if len(result) > 1 and is_agg_query:
                     eprint(f"Warning: Aggregation query {question_id} returned multiple rows ({len(result)}), expected single value")
@@ -889,17 +807,15 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
                 eprint(f"ERROR: Query {question_id} failed: {e}")
                 eprint(f"  SQL: {sql_text}")
 
-        # Convert set to count for JSON serialization
         validation_results["unique_tables_tested"] = len(validation_results["tables_tested"])
         del validation_results["tables_tested"]
 
-        # Summary
-        success_rate = (validation_results["successful_queries"] / validation_results["total_queries"]) * 100
+        success_rate = (validation_results["successful_queries"] / max(validation_results["total_queries"], 1)) * 100
         eprint(f"[validation] Results: {validation_results['successful_queries']}/{validation_results['total_queries']} queries successful ({success_rate:.1f}%)")
 
         if validation_results["failed_queries"] > 0:
             eprint(f"[validation] WARNING: {validation_results['failed_queries']} queries failed!")
-            for error in validation_results["errors"][:5]:  # Show first 5 errors
+            for error in validation_results["errors"][:5]:
                 eprint(f"  - Query {error['question_id']}: {error['error']}")
             if len(validation_results["errors"]) > 5:
                 eprint(f"  - ... and {len(validation_results['errors']) - 5} more errors")
@@ -910,10 +826,90 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
         conn.close()
 
 
+def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
+    """
+    Compute concise distribution stats over the top-500 questions in the final DB.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("""
+            SELECT split, agg, cond_count, has_hard_ops, q_words, n_rows, n_cols, where_match_count, conds_json
+            FROM questions
+        """).fetchall()
+
+        totals = len(rows)
+        splits = {"train": 0, "dev": 0, "test": 0}
+        aggs = {"NONE": 0, "MAX": 0, "MIN": 0, "COUNT": 0, "SUM": 0, "AVG": 0}
+        conds_hist = {"0": 0, "1": 0, "2": 0, ">=3": 0}
+        hard_ops = {"with_hard_ops": 0, "no_hard_ops": 0}
+        op_counts = {"=": 0, ">": 0, "<": 0, ">=": 0, "<=": 0, "!=": 0}
+
+        sum_q_words = 0
+        sum_n_rows = 0
+        sum_n_cols = 0
+        sum_where = 0
+
+        for split, agg_idx, cond_count, has_hard, q_words, n_rows, n_cols, where_ct, conds_json in rows:
+            if split in splits:
+                splits[split] += 1
+            agg_name = AGG_MAP.get(int(agg_idx))
+            aggs["NONE" if agg_name is None else agg_name] += 1
+
+            if cond_count >= 3:
+                conds_hist[">=3"] += 1
+            else:
+                conds_hist[str(int(cond_count))] += 1
+
+            if has_hard:
+                hard_ops["with_hard_ops"] += 1
+            else:
+                hard_ops["no_hard_ops"] += 1
+
+            sum_q_words += int(q_words)
+            sum_n_rows += int(n_rows)
+            sum_n_cols += int(n_cols)
+            sum_where += int(where_ct)
+
+            try:
+                conds = json.loads(conds_json) if conds_json else []
+            except Exception:
+                conds = []
+            for c in conds:
+                if isinstance(c, list) and len(c) >= 2:
+                    op_idx = int(c[1])
+                    sym = OP_MAP_BASE.get(op_idx, OP_EXTS.get(op_idx, "="))
+                    if sym in op_counts:
+                        op_counts[sym] += 1
+                    else:
+                        op_counts[sym] = 1
+
+        # Only include operators actually present to keep it tidy
+        op_counts = {k: v for k, v in op_counts.items() if v > 0}
+
+        averages = {
+            "q_words": round(sum_q_words / totals, 1) if totals else 0.0,
+            "n_rows": round(sum_n_rows / totals, 1) if totals else 0.0,
+            "n_cols": round(sum_n_cols / totals, 1) if totals else 0.0,
+            "where_match_count": round(sum_where / totals, 1) if totals else 0.0,
+        }
+
+        return {
+            "total": totals,
+            "splits": splits,
+            "aggregations": aggs,
+            "operators": op_counts,
+            "conds_per_query": conds_hist,
+            "hard_ops": hard_ops,
+            "averages": averages,
+        }
+    finally:
+        conn.close()
+
+
 def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     End-to-end pipeline:
-      1) Create work DB (metadata only).
+      1) Create wip DB (metadata only).
       2) Populate metadata (tables, questions, op_map).
       3) Create scoring views (pure-SQL features).
       4) Compute ambiguity counts (where_match_count) by executing COUNT(*) against source DBs.
@@ -922,30 +918,28 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     split_files = validate_split_files(extracted_root)
 
-    work_db = out_db.with_suffix(".work.sqlite")
-    if work_db.exists():
-        work_db.unlink()
-    conn = setup_work_db(work_db)
+    # e.g., wikisql-top500.sqlite -> wikisql-top500-wip.sqlite
+    wip_db = out_db.with_name(out_db.stem + "-wip.sqlite")
+    if wip_db.exists():
+        wip_db.unlink()
+    conn = setup_wip_db(wip_db)
 
     try:
         op_map = build_operator_mapping(conn, split_files)
         table_headers = process_table_metadata(conn, split_files)
         total_questions = process_questions(conn, split_files, table_headers, op_map)
         create_scoring_views(conn)
-        # Ambiguity boost
         n_amb = compute_where_match_counts(conn, split_files)
-        # Rank and select
         select_top500(conn)
 
         sum_rows = conn.execute("SELECT SUM(n_rows) FROM top500_tables").fetchone()[0]
 
-        # Build final DB
         stats = build_final_db(conn, split_files, out_db)
 
         conn.commit()
 
-        # Validate all queries in the final database
         validation_results = validate_all_queries(out_db)
+        distribution = compute_top500_distribution(out_db)
 
         return {
             "total_questions_all_splits": total_questions,
@@ -954,6 +948,9 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
             "top500_rows_across_tables": sum_rows,
             "where_match_counts_computed": n_amb,
             "validation": validation_results,
+            "top500_distribution": distribution,
+            "wip_db": str(wip_db),
+            "final_db": str(out_db),
         }
     finally:
         conn.close()
@@ -972,20 +969,20 @@ def main():
     out_db = Path(args.out).resolve()
 
     if args.validate_only:
-        # Run validation only on existing database
         if not out_db.exists():
             raise FileNotFoundError(f"Database not found for validation: {out_db}")
 
         eprint(f"Running validation on existing database: {out_db}")
         validation_results = validate_all_queries(out_db)
+        distribution = compute_top500_distribution(out_db)
 
         summary = {
             "validation_only": True,
             "database_path": str(out_db),
             "validation": validation_results,
+            "top500_distribution": distribution,
         }
     else:
-        # Full build process
         workdir = Path("data/raw/wikisql").resolve()
 
         # Obtain archive
@@ -1007,36 +1004,6 @@ def main():
         extract_tar_bz2(archive_path, workdir)
 
         summary = build_top500(extracted_root=workdir, out_db=out_db)
-
-    # Meta JSON (deterministic content)
-    meta_path = Path(str(out_db) + ".meta.json")
-
-    if args.validate_only:
-        meta = {
-            "dataset": "wikisql",
-            "export": "top500-difficulty",
-            "version": "1.0.0",
-            "validation_only": True,
-            "validation": summary["validation"],
-        }
-    else:
-        meta = {
-            "dataset": "wikisql",
-            "export": "top500-difficulty",
-            "version": "1.0.0",
-            "source_url": DEFAULT_URL if is_url(args.src) else str(args.src),
-            "counts": {
-                "questions_total_all_splits": summary["total_questions_all_splits"],
-                "top500_questions": summary["top500_questions"],
-                "top500_tables": summary["top500_tables"],
-                "top500_rows_total": summary["top500_rows_across_tables"],
-                "where_match_counts_computed": summary["where_match_counts_computed"],
-            },
-            "validation": summary.get("validation", {})
-        }
-
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
