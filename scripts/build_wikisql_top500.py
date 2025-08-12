@@ -2,17 +2,6 @@
 """
 Build a slim, deterministic WikiSQL SQLite DB containing the 500 most difficult NL->SQL pairs.
 
-Key requirements satisfied:
-- Do NOT combine dev/test/train raw tables into one database.
-- Reconstruct questions (incl. sql_text) exactly like the original pipeline.
-- Compute difficulty with pure-SQL features + an ambiguity boost (WHERE row-match count).
-- Rank deterministically and select the top 500 across all splits.
-- Produce a single final DB on disk that contains:
-    * top-500 questions (+ scores and where_match_count)
-    * the referenced source tables (copied from their original split DBs)
-    * table metadata and op_map
-- Deterministic end-to-end: fixed ordering, deterministic weights, stable tie-breaks.
-
 CLI:
   python build_wikisql_top500.py [--src <URL-or-path>] [--out <final_db_path>]
 
@@ -27,7 +16,7 @@ import sqlite3
 import sys
 import tarfile
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 DEFAULT_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
 DEFAULT_OUT = "data/processed/wikisql/wikisql-top500.sqlite"
@@ -83,6 +72,41 @@ def quote_literal(val: str) -> str:
 
 
 AGG_MAP = {0: None, 1: "MAX", 2: "MIN", 3: "COUNT", 4: "SUM", 5: "AVG"}
+
+
+def sanitize_column_name(name: str) -> str:
+    """Convert a human-readable column name to a valid SQL identifier."""
+    import re
+    # Replace problematic characters with underscores
+    sanitized = re.sub(r'[^\w]', '_', name)
+    # Remove consecutive underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    # Ensure it doesn't start with a number
+    if sanitized and sanitized[0].isdigit():
+        sanitized = 'col_' + sanitized
+    # Handle empty names
+    if not sanitized:
+        sanitized = 'unnamed_col'
+    return sanitized
+
+
+def ensure_unique_column_names(headers: list) -> list:
+    """Ensure all column names are unique by adding suffixes to duplicates."""
+    seen = {}
+    result = []
+    for header in headers:
+        sanitized = sanitize_column_name(str(header))
+        if sanitized in seen:
+            seen[sanitized] += 1
+            unique_name = f"{sanitized}_{seen[sanitized]}"
+        else:
+            seen[sanitized] = 0
+            unique_name = sanitized
+        result.append(unique_name)
+    return result
+
 OP_MAP_BASE = {0: "=", 1: ">", 2: "<"}
 OP_EXTS = {3: ">=", 4: "<=", 5: "!="}
 
@@ -242,7 +266,11 @@ def build_sql_text(table_name: str, sel_idx: int, agg: int, conds: list,
         raise RuntimeError(f"No header known for table {table_name}")
     if not (0 <= sel_idx < len(header)):
         raise RuntimeError(f"sel_col_idx {sel_idx} out of bounds for table {table_name}")
-    sel_col = header[sel_idx]
+
+    # Convert headers to sanitized column names that match the table structure
+    sanitized_headers = ensure_unique_column_names(header)
+
+    sel_col = sanitized_headers[sel_idx]
     agg_name = AGG_MAP.get(agg)
     sel_expr = f"{quote_ident(sel_col)}" if agg_name is None else f"{agg_name}({quote_ident(sel_col)})"
     where = []
@@ -250,12 +278,12 @@ def build_sql_text(table_name: str, sel_idx: int, agg: int, conds: list,
         if not isinstance(c, list) or len(c) < 3:
             continue
         col_idx, op_idx, value = int(c[0]), int(c[1]), c[2]
-        if not (0 <= col_idx < len(header)):
+        if not (0 <= col_idx < len(sanitized_headers)):
             raise RuntimeError(f"cond col_idx {col_idx} out of bounds for table {table_name}")
         op = op_map.get(op_idx)
         if op is None:
             raise RuntimeError(f"Unknown operator index {op_idx}")
-        where.append(f"{quote_ident(header[col_idx])} {op} {quote_literal(str(value))}")
+        where.append(f"{quote_ident(sanitized_headers[col_idx])} {op} {quote_literal(str(value))}")
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     return f"SELECT {sel_expr} FROM {quote_ident(table_name)}{where_sql};"
 
@@ -646,8 +674,45 @@ def build_final_db(work_conn: sqlite3.Connection,
 
         for split, table_name in tables:
             alias = aliases[split]
-            eprint(f"[final] copying {table_name} from {split}")
-            conn.execute(f'CREATE TABLE {quote_ident(table_name)} AS SELECT * FROM {alias}.{quote_ident(table_name)};')
+
+            # Get header information from work database
+            header_json = work_conn.execute(
+                "SELECT header_json FROM top500_tables WHERE table_name = ?",
+                (table_name,)
+            ).fetchone()[0]
+            headers = json.loads(header_json)
+
+            # Get source table structure
+            source_columns = conn.execute(f"PRAGMA {alias}.table_info({quote_ident(table_name)})").fetchall()
+
+            # Create proper column names
+            proper_column_names = ensure_unique_column_names(headers)
+
+            # Handle case where we have more/fewer headers than actual columns
+            if len(proper_column_names) != len(source_columns):
+                eprint(f"Warning: Header count mismatch for {table_name}. Headers: {len(headers)}, Columns: {len(source_columns)}")
+                # Pad with generic names if we have more columns than headers
+                while len(proper_column_names) < len(source_columns):
+                    proper_column_names.append(f"col_{len(proper_column_names)}")
+                # Truncate if we have more headers than columns
+                proper_column_names = proper_column_names[:len(source_columns)]
+
+            # Build CREATE TABLE statement with proper column names and types
+            column_defs = []
+            for i, (cid, old_name, type_name, notnull, default, pk) in enumerate(source_columns):
+                new_name = quote_ident(proper_column_names[i])
+                column_defs.append(f"{new_name} {type_name}")
+
+            create_sql = f"CREATE TABLE {quote_ident(table_name)} ({', '.join(column_defs)})"
+            conn.execute(create_sql)
+
+            # Insert data with column mapping (source columns are col0, col1, etc.)
+            old_columns = [f"col{i}" for i in range(len(source_columns))]
+            conn.execute(f"""
+                INSERT INTO {quote_ident(table_name)}
+                SELECT {', '.join(old_columns)}
+                FROM {alias}.{quote_ident(table_name)}
+            """)
 
         # Commit before detaching to prevent lock issues
         conn.commit()
@@ -669,7 +734,90 @@ def build_final_db(work_conn: sqlite3.Connection,
         conn.close()
 
 
-def build_top500(extracted_root: Path, out_db: Path) -> dict:
+def validate_all_queries(db_path: Path) -> Dict[str, Any]:
+    """
+    Validate that all 500 SQL queries in the database execute successfully.
+    Returns detailed validation statistics and any errors found.
+    """
+    eprint("[validation] Testing all 500 SQL queries...")
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON;")
+
+    try:
+        # Get all questions with their SQL queries
+        questions = conn.execute("""
+            SELECT id, table_name, sql_text, split
+            FROM questions
+            ORDER BY id ASC
+        """).fetchall()
+
+        validation_results = {
+            "total_queries": len(questions),
+            "successful_queries": 0,
+            "failed_queries": 0,
+            "errors": [],
+            "query_types": {"SELECT": 0, "SELECT_AGG": 0},
+            "splits": {"train": 0, "dev": 0, "test": 0},
+            "tables_tested": set()
+        }
+
+        for question_id, table_name, sql_text, split in questions:
+            validation_results["tables_tested"].add(table_name)
+            validation_results["splits"][split] += 1
+
+            # Categorize query type
+            if " AVG(" in sql_text or " SUM(" in sql_text or " MIN(" in sql_text or " MAX(" in sql_text or " COUNT(" in sql_text:
+                validation_results["query_types"]["SELECT_AGG"] += 1
+            else:
+                validation_results["query_types"]["SELECT"] += 1
+
+            try:
+                # Execute the query
+                result = conn.execute(sql_text).fetchall()
+                validation_results["successful_queries"] += 1
+
+                # Additional validation: check that result structure makes sense
+                # Only warn about multiple rows for aggregation queries (which should return single values)
+                is_agg_query = " AVG(" in sql_text or " SUM(" in sql_text or " MIN(" in sql_text or " MAX(" in sql_text or " COUNT(" in sql_text
+                if len(result) > 1 and is_agg_query:
+                    eprint(f"Warning: Aggregation query {question_id} returned multiple rows ({len(result)}), expected single value")
+
+            except Exception as e:
+                validation_results["failed_queries"] += 1
+                error_info = {
+                    "question_id": question_id,
+                    "table_name": table_name,
+                    "sql_text": sql_text,
+                    "error": str(e),
+                    "split": split
+                }
+                validation_results["errors"].append(error_info)
+                eprint(f"ERROR: Query {question_id} failed: {e}")
+                eprint(f"  SQL: {sql_text}")
+
+        # Convert set to count for JSON serialization
+        validation_results["unique_tables_tested"] = len(validation_results["tables_tested"])
+        del validation_results["tables_tested"]
+
+        # Summary
+        success_rate = (validation_results["successful_queries"] / validation_results["total_queries"]) * 100
+        eprint(f"[validation] Results: {validation_results['successful_queries']}/{validation_results['total_queries']} queries successful ({success_rate:.1f}%)")
+
+        if validation_results["failed_queries"] > 0:
+            eprint(f"[validation] WARNING: {validation_results['failed_queries']} queries failed!")
+            for error in validation_results["errors"][:5]:  # Show first 5 errors
+                eprint(f"  - Query {error['question_id']}: {error['error']}")
+            if len(validation_results["errors"]) > 5:
+                eprint(f"  - ... and {len(validation_results['errors']) - 5} more errors")
+
+        return validation_results
+
+    finally:
+        conn.close()
+
+
+def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     End-to-end pipeline:
       1) Create work DB (metadata only).
@@ -702,14 +850,17 @@ def build_top500(extracted_root: Path, out_db: Path) -> dict:
         stats = build_final_db(conn, split_files, out_db)
 
         conn.commit()
+
+        # Validate all queries in the final database
+        validation_results = validate_all_queries(out_db)
+
         return {
-            "out_db": str(out_db),
-            "work_db": str(work_db),
-            "total_questions_all_splits": int(total_questions),
-            "top500_questions": int(stats["questions"]),
-            "top500_tables": int(stats["tables"]),
-            "top500_rows_across_tables": int(sum_rows) if sum_rows is not None else 0,
-            "where_match_counts_computed": int(n_amb),
+            "total_questions_all_splits": total_questions,
+            "top500_questions": stats["questions"],
+            "top500_tables": stats["tables"],
+            "top500_rows_across_tables": sum_rows,
+            "where_match_counts_computed": n_amb,
+            "validation": validation_results,
         }
     finally:
         conn.close()
@@ -721,46 +872,76 @@ def main():
                         help=f"URL or local path to the WikiSQL data archive (data.tar.bz2). Default: {DEFAULT_URL}")
     parser.add_argument("--out", default=DEFAULT_OUT,
                         help=f"Output SQLite DB path. Default: {DEFAULT_OUT}")
+    parser.add_argument("--validate-only", action="store_true",
+                        help="Only run validation on existing database (skip build process)")
     args = parser.parse_args()
 
     out_db = Path(args.out).resolve()
-    workdir = Path("data/raw/wikisql").resolve()
 
-    # Obtain archive
-    if is_url(args.src):
-        archive_path = workdir / "data.tar.bz2"
-        if archive_path.exists():
-            eprint(f"Using existing archive: {archive_path}")
-        else:
-            workdir.mkdir(parents=True, exist_ok=True)
-            archive_bytes = download_to_bytes(args.src)
-            archive_path.write_bytes(archive_bytes)
-            eprint(f"Downloaded archive to: {archive_path}")
+    if args.validate_only:
+        # Run validation only on existing database
+        if not out_db.exists():
+            raise FileNotFoundError(f"Database not found for validation: {out_db}")
+
+        eprint(f"Running validation on existing database: {out_db}")
+        validation_results = validate_all_queries(out_db)
+
+        summary = {
+            "validation_only": True,
+            "database_path": str(out_db),
+            "validation": validation_results,
+        }
     else:
-        archive_path = Path(args.src).expanduser().resolve()
-        if not archive_path.exists():
-            raise FileNotFoundError(f"--src path not found: {archive_path}")
+        # Full build process
+        workdir = Path("data/raw/wikisql").resolve()
 
-    eprint(f"Extracting archive to: {workdir}")
-    extract_tar_bz2(archive_path, workdir)
+        # Obtain archive
+        if is_url(args.src):
+            archive_path = workdir / "data.tar.bz2"
+            if archive_path.exists():
+                eprint(f"Using existing archive: {archive_path}")
+            else:
+                workdir.mkdir(parents=True, exist_ok=True)
+                archive_bytes = download_to_bytes(args.src)
+                archive_path.write_bytes(archive_bytes)
+                eprint(f"Downloaded archive to: {archive_path}")
+        else:
+            archive_path = Path(args.src).expanduser().resolve()
+            if not archive_path.exists():
+                raise FileNotFoundError(f"--src path not found: {archive_path}")
 
-    summary = build_top500(extracted_root=workdir, out_db=out_db)
+        eprint(f"Extracting archive to: {workdir}")
+        extract_tar_bz2(archive_path, workdir)
+
+        summary = build_top500(extracted_root=workdir, out_db=out_db)
 
     # Meta JSON (deterministic content)
     meta_path = Path(str(out_db) + ".meta.json")
-    meta = {
-        "dataset": "wikisql",
-        "export": "top500-difficulty",
-        "version": "1.0.0",
-        "source_url": DEFAULT_URL if is_url(args.src) else str(args.src),
-        "counts": {
-            "questions_total_all_splits": summary["total_questions_all_splits"],
-            "top500_questions": summary["top500_questions"],
-            "top500_tables": summary["top500_tables"],
-            "top500_rows_total": summary["top500_rows_across_tables"],
-            "where_match_counts_computed": summary["where_match_counts_computed"],
+
+    if args.validate_only:
+        meta = {
+            "dataset": "wikisql",
+            "export": "top500-difficulty",
+            "version": "1.0.0",
+            "validation_only": True,
+            "validation": summary["validation"],
         }
-    }
+    else:
+        meta = {
+            "dataset": "wikisql",
+            "export": "top500-difficulty",
+            "version": "1.0.0",
+            "source_url": DEFAULT_URL if is_url(args.src) else str(args.src),
+            "counts": {
+                "questions_total_all_splits": summary["total_questions_all_splits"],
+                "top500_questions": summary["top500_questions"],
+                "top500_tables": summary["top500_tables"],
+                "top500_rows_total": summary["top500_rows_across_tables"],
+                "where_match_counts_computed": summary["where_match_counts_computed"],
+            },
+            "validation": summary.get("validation", {})
+        }
+
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
