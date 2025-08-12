@@ -177,11 +177,9 @@ def setup_work_db(work_db: Path) -> sqlite3.Connection:
         CREATE TABLE wikisql_tables (
             table_name TEXT PRIMARY KEY,
             split TEXT NOT NULL CHECK (split IN ('train','dev','test')),
-            table_id TEXT NOT NULL,
             header_json TEXT NOT NULL,
             types_json TEXT NOT NULL,
             n_rows INTEGER NOT NULL,
-            pretty_name TEXT,
             page_title TEXT,
             section_title TEXT,
             caption TEXT,
@@ -191,7 +189,6 @@ def setup_work_db(work_db: Path) -> sqlite3.Connection:
         CREATE TABLE questions (
             id INTEGER PRIMARY KEY,
             split TEXT NOT NULL CHECK (split IN ('train','dev','test')),
-            table_id TEXT NOT NULL,
             table_name TEXT NOT NULL,
             question TEXT NOT NULL,
             agg INTEGER NOT NULL,
@@ -202,7 +199,6 @@ def setup_work_db(work_db: Path) -> sqlite3.Connection:
 
         CREATE INDEX idx_questions_table    ON questions(table_name);
         CREATE INDEX idx_questions_split    ON questions(split);
-        CREATE INDEX idx_questions_table_id ON questions(table_id);
 
         CREATE TABLE op_map (op_idx INTEGER PRIMARY KEY, symbol TEXT NOT NULL);
 
@@ -313,7 +309,7 @@ def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict
                 types = obj.get("types", [])
                 table_headers[tname] = header
                 table_types[tname] = types
-                pretty_name = obj.get("name")
+
                 page_title = obj.get("page_title")
                 section_title = obj.get("section_title")
                 caption = obj.get("caption")
@@ -326,12 +322,12 @@ def process_table_metadata(conn: sqlite3.Connection, split_files: Dict[str, Dict
 
                 conn.execute(
                     """INSERT INTO wikisql_tables
-                       (table_name, split, table_id, header_json, types_json, n_rows, pretty_name, page_title, section_title, caption, page_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (tname, split, tid,
+                       (table_name, split, header_json, types_json, n_rows, page_title, section_title, caption, page_id)
+                       VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (tname, split,
                      json.dumps(header, ensure_ascii=False),
                      json.dumps(types,  ensure_ascii=False),
-                     int(n_rows), pretty_name, page_title, section_title, caption,
+                     int(n_rows), page_title, section_title, caption,
                      None if page_id is None else str(page_id))
                 )
                 count += 1
@@ -362,9 +358,9 @@ def process_questions(conn: sqlite3.Connection, split_files: Dict[str, Dict[str,
                 # ensure conds JSON is deterministically serialized
                 sql_text = build_sql_text(tname, sel, agg, conds, table_headers, op_map)
                 conn.execute(
-                    "INSERT INTO questions (split, table_id, table_name, question, agg, sel_col_idx, conds_json, sql_text) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (split, tid, tname, question, agg, sel, json.dumps(conds, ensure_ascii=False), sql_text)
+                    "INSERT INTO questions (split, table_name, question, agg, sel_col_idx, conds_json, sql_text) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (split, tname, question, agg, sel, json.dumps(conds, ensure_ascii=False), sql_text)
                 )
                 inserted += 1
         eprint(f"[{split}] inserted questions: (cumulative) {inserted}")
@@ -413,7 +409,6 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
         SELECT
           q.id,
           q.split,
-          q.table_id,
           q.table_name,
           q.question,
           q.agg,
@@ -450,7 +445,7 @@ def create_scoring_views(conn: sqlite3.Connection) -> None:
         DROP VIEW IF EXISTS v_q_difficulty;
         CREATE VIEW v_q_difficulty AS
         SELECT
-          vws.id, vws.split, vws.table_id, vws.table_name, vws.question, vws.agg, q.sel_col_idx, q.conds_json, q.sql_text,
+          vws.id, vws.split, vws.table_name, vws.question, vws.agg, q.sel_col_idx, q.conds_json, q.sql_text,
           vws.cond_count, vws.has_hard_ops, vws.op_rarity_sum, vws.agg_rarity, vws.q_words, vws.n_rows, vws.n_cols,
           ({W_COND_COUNT} * vws.cond_count)
           + ({W_OP_RARITY}  * vws.op_rarity_sum)
@@ -552,9 +547,7 @@ def select_top500(conn: sqlite3.Connection) -> None:
         FROM top500_questions t
         JOIN wikisql_tables wt ON wt.table_name = t.table_name AND wt.split = t.split;
 
-        -- Keep a compact copy of op_map (for reference)
-        DROP TABLE IF EXISTS top500_op_map;
-        CREATE TABLE top500_op_map AS SELECT * FROM op_map ORDER BY op_idx ASC;
+
     """)
 
 
@@ -563,9 +556,8 @@ def build_final_db(work_conn: sqlite3.Connection,
                    out_db: Path) -> Dict[str, int]:
     """
     Create the final slim DB on disk:
-      - questions (top 500 with scores + where_match_count)
+      - questions (top 500 with scores)
       - wikisql_tables (only referenced tables)
-      - op_map
       - physical source tables copied from split DBs (exact names)
     """
     if out_db.exists():
@@ -584,7 +576,6 @@ def build_final_db(work_conn: sqlite3.Connection,
             CREATE TABLE questions (
                 id INTEGER PRIMARY KEY,
                 split TEXT NOT NULL CHECK (split IN ('train','dev','test')),
-                table_id TEXT NOT NULL,
                 table_name TEXT NOT NULL,
                 question TEXT NOT NULL,
                 agg INTEGER NOT NULL,
@@ -606,41 +597,41 @@ def build_final_db(work_conn: sqlite3.Connection,
             CREATE TABLE wikisql_tables (
                 table_name TEXT PRIMARY KEY,
                 split TEXT NOT NULL CHECK (split IN ('train','dev','test')),
-                table_id TEXT NOT NULL,
                 header_json TEXT NOT NULL,
                 types_json TEXT NOT NULL,
                 n_rows INTEGER NOT NULL,
-                pretty_name TEXT,
                 page_title TEXT,
                 section_title TEXT,
                 caption TEXT,
                 page_id TEXT
             );
 
-            CREATE TABLE op_map (op_idx INTEGER PRIMARY KEY, symbol TEXT NOT NULL);
-
             CREATE VIEW v_tables_browse AS
             SELECT
               table_name,
-              COALESCE(NULLIF(TRIM(pretty_name), ''), table_name) AS display_name,
               split,
-              table_id,
               n_rows,
               page_title,
               section_title,
               caption
             FROM wikisql_tables;
+
+            CREATE VIEW v_top500_questions AS
+            SELECT
+              table_name,
+              question,
+              sql_text
+            FROM questions
+            ORDER BY difficulty_score_plus DESC;
         """)
 
         # Copy metadata from work DB
         # (Use deterministic column order to avoid surprises.)
         cols_q = [c[1] for c in work_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
         cols_w = [c[1] for c in work_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
-        cols_o = [c[1] for c in work_conn.execute("PRAGMA table_info(top500_op_map)").fetchall()]
 
         q_rows = work_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
         w_rows = work_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
-        o_rows = work_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_o))} FROM top500_op_map ORDER BY op_idx ASC").fetchall()
 
         # Insert into final schema (using dynamic column lists)
         q_placeholders = ','.join(['?'] * len(cols_q))
@@ -654,8 +645,6 @@ def build_final_db(work_conn: sqlite3.Connection,
             INSERT INTO wikisql_tables ({', '.join(map(quote_ident, cols_w))})
             VALUES ({w_placeholders})
         """, w_rows)
-
-        conn.executemany("INSERT INTO op_map (op_idx, symbol) VALUES (?,?)", o_rows)
 
         # Copy the actual referenced data tables from their split DBs
         # Attach split DBs
@@ -727,7 +716,6 @@ def build_final_db(work_conn: sqlite3.Connection,
         stats = {
             "questions": len(q_rows),
             "tables": len(tables),
-            "op_map": len(o_rows),
         }
         return stats
     finally:
