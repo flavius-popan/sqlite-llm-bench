@@ -17,6 +17,9 @@ Defaults:
   --src defaults to the canonical GitHub raw: https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2
   Output: data/processed/wikisql/wikisql-v1.sqlite
 """
+import os
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+
 import argparse
 import json
 import sqlite3

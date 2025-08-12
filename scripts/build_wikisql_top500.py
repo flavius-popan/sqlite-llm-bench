@@ -9,8 +9,10 @@ Defaults:
   --src defaults to the canonical GitHub raw: https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2
   --out defaults to: data/processed/wikisql/wikisql-top500.sqlite
 """
+
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -20,6 +22,8 @@ from typing import Any, Dict, List
 
 DEFAULT_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
 DEFAULT_OUT = "data/processed/wikisql/wikisql-top500.sqlite"
+
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 
 try:
     import requests  # only needed if --src is a URL
@@ -86,6 +90,34 @@ def sanitize_column_name(name: str) -> str:
     if not name:
         return 'unnamed_col'
 
+    # Handle superscript/exponent characters early
+    exponent_replacements = {
+        '¹': '_1',
+        '²': '_squared',
+        '³': '_cubed',
+        '⁴': '_4',
+        '⁵': '_5',
+        '⁶': '_6',
+        '⁷': '_7',
+        '⁸': '_8',
+        '⁹': '_9',
+        '⁰': '_0',
+    }
+
+    for exponent, replacement in exponent_replacements.items():
+        name = name.replace(exponent, replacement)
+
+    # Handle year patterns early, before other processing
+    # Convert standalone 4-digit years to yr_ prefix
+    if re.match(r'^\d{4}$', name):
+        return 'yr_' + name
+
+    # Handle year ranges like "2007-08" or "2007/08"
+    name = re.sub(r'\b(\d{4})[\-/](\d{2})\b', r'yr_\1_\2', name)
+
+    # Handle other year patterns like "2020 Season"
+    name = re.sub(r'\b(\d{4})\b', r'yr_\1', name)
+
     # Handle specific patterns first (order matters)
     # Handle "Pick #" -> "pick_number"
     name = re.sub(r'\b(\w+)\s*#(\d+)', r'\1_number_\2', name, flags=re.IGNORECASE)
@@ -118,7 +150,6 @@ def sanitize_column_name(name: str) -> str:
         r'\boriginal\s+': 'original_',
         r'\bproduction\s+': 'production_',
         r'\bair\s+date\b': 'air_date',
-        r'\byr\b': 'year',
         r'\byrs\b': 'years',
         r'\bmin\b': 'minimum',
         r'\bmax\b': 'maximum',
@@ -144,8 +175,10 @@ def sanitize_column_name(name: str) -> str:
     # Convert to lowercase
     name = name.lower()
 
-    # Replace any remaining problematic characters with underscores
-    name = re.sub(r'[^\w]', '_', name)
+    # Replace problematic characters with underscores, but preserve periods and apostrophes
+    name = re.sub(r'[^\w\.\']', '_', name)
+    # Remove periods and apostrophes without replacement
+    name = re.sub(r'[\.\']', '', name)
 
     # Remove consecutive underscores
     name = re.sub(r'_+', '_', name)
@@ -153,8 +186,8 @@ def sanitize_column_name(name: str) -> str:
     # Remove leading/trailing underscores
     name = name.strip('_')
 
-    # Ensure it doesn't start with a number
-    if name and name[0].isdigit():
+    # Ensure it doesn't start with a number (for non-year cases)
+    if name and name[0].isdigit() and not name.startswith('yr_'):
         name = 'col_' + name
 
     # Handle empty result
