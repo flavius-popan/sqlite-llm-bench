@@ -75,21 +75,93 @@ AGG_MAP = {0: None, 1: "MAX", 2: "MIN", 3: "COUNT", 4: "SUM", 5: "AVG"}
 
 
 def sanitize_column_name(name: str) -> str:
-    """Convert a human-readable column name to a valid SQL identifier."""
+    """Convert a human-readable column name to a valid SQL identifier with consistent snake_case."""
     import re
-    # Replace problematic characters with underscores
-    sanitized = re.sub(r'[^\w]', '_', name)
+
+    # Convert to string and handle None/empty cases
+    if not name:
+        return 'unnamed_col'
+
+    name = str(name).strip()
+    if not name:
+        return 'unnamed_col'
+
+    # Handle specific patterns first (order matters)
+    # Handle "Pick #" -> "pick_number"
+    name = re.sub(r'\b(\w+)\s*#(\d+)', r'\1_number_\2', name, flags=re.IGNORECASE)
+    name = re.sub(r'\b(\w+)\s*#\s*$', r'\1_number', name, flags=re.IGNORECASE)
+
+    # Handle "% something" -> "percent_something"
+    name = re.sub(r'%\s+', 'percent_', name, flags=re.IGNORECASE)
+    name = re.sub(r'^%\s*', 'percent_', name, flags=re.IGNORECASE)
+
+    # Handle "# of something" -> "num_of_something"
+    name = re.sub(r'#\s*of\s+', 'num_of_', name, flags=re.IGNORECASE)
+
+    # Handle "No." -> "number"
+    name = re.sub(r'\bno\.\s*', 'number_', name, flags=re.IGNORECASE)
+    name = re.sub(r'\bno\s+of\s+', 'number_of_', name, flags=re.IGNORECASE)
+
+    # Handle common abbreviations and words (specific patterns first)
+    replacements = {
+        r'\btotal\s+w[–\-]l\b': 'total_wins_losses',
+        r'\bsingles\s+w[–\-]l\b': 'singles_wins_losses',
+        r'\bdoubles\s+w[–\-]l\b': 'doubles_wins_losses',
+        r'\bw[–\-]l\b': 'wins_losses',
+        r'\bnumber\s+of\s+': 'number_of_',
+        r'\bamount\s+of\s+': 'amount_of_',
+        r'\btotal\s+': 'total_',
+        r'\bhighest\s+': 'highest_',
+        r'\blowest\s+': 'lowest_',
+        r'\bfirst\s+': 'first_',
+        r'\blast\s+': 'last_',
+        r'\boriginal\s+': 'original_',
+        r'\bproduction\s+': 'production_',
+        r'\bair\s+date\b': 'air_date',
+        r'\byr\b': 'year',
+        r'\byrs\b': 'years',
+        r'\bmin\b': 'minimum',
+        r'\bmax\b': 'maximum',
+        r'\bavg\b': 'average',
+        r'\btemp\b': 'temperature',
+        r'\bpop\b': 'population',
+        r'\bpct\b': 'percent',
+        r'\bsemi[_\s\-]finalist\b': 'semi_finalist',
+    }
+
+    # Apply pattern replacements (case insensitive)
+    for pattern, replacement in replacements.items():
+        name = re.sub(pattern, replacement, name, flags=re.IGNORECASE)
+
+    # Handle parentheses - extract meaningful content and convert to underscores
+    # "Population (thousands)" -> "population_thousands"
+    name = re.sub(r'\s*\(\s*([^)]+)\s*\)', r'_\1', name)
+
+    # Convert camelCase and PascalCase to snake_case
+    # Insert underscore before uppercase letters that follow lowercase letters
+    name = re.sub(r'([a-z])([A-Z])', r'\1_\2', name)
+
+    # Convert to lowercase
+    name = name.lower()
+
+    # Replace any remaining problematic characters with underscores
+    name = re.sub(r'[^\w]', '_', name)
+
     # Remove consecutive underscores
-    sanitized = re.sub(r'_+', '_', sanitized)
+    name = re.sub(r'_+', '_', name)
+
     # Remove leading/trailing underscores
-    sanitized = sanitized.strip('_')
+    name = name.strip('_')
+
     # Ensure it doesn't start with a number
-    if sanitized and sanitized[0].isdigit():
-        sanitized = 'col_' + sanitized
-    # Handle empty names
-    if not sanitized:
-        sanitized = 'unnamed_col'
-    return sanitized
+    if name and name[0].isdigit():
+        name = 'col_' + name
+
+    # Handle empty result
+    if not name:
+        name = 'unnamed_col'
+
+    return name
 
 
 def ensure_unique_column_names(headers: list) -> list:
