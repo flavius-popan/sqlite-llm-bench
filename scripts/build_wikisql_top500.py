@@ -840,35 +840,13 @@ def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
         totals = len(rows)
         splits = {"train": 0, "dev": 0, "test": 0}
         aggs = {"NONE": 0, "MAX": 0, "MIN": 0, "COUNT": 0, "SUM": 0, "AVG": 0}
-        conds_hist = {"0": 0, "1": 0, "2": 0, ">=3": 0}
-        hard_ops = {"with_hard_ops": 0, "no_hard_ops": 0}
         op_counts = {"=": 0, ">": 0, "<": 0, ">=": 0, "<=": 0, "!=": 0}
-
-        sum_q_words = 0
-        sum_n_rows = 0
-        sum_n_cols = 0
-        sum_where = 0
 
         for split, agg_idx, cond_count, has_hard, q_words, n_rows, n_cols, where_ct, conds_json in rows:
             if split in splits:
                 splits[split] += 1
             agg_name = AGG_MAP.get(int(agg_idx))
             aggs["NONE" if agg_name is None else agg_name] += 1
-
-            if cond_count >= 3:
-                conds_hist[">=3"] += 1
-            else:
-                conds_hist[str(int(cond_count))] += 1
-
-            if has_hard:
-                hard_ops["with_hard_ops"] += 1
-            else:
-                hard_ops["no_hard_ops"] += 1
-
-            sum_q_words += int(q_words)
-            sum_n_rows += int(n_rows)
-            sum_n_cols += int(n_cols)
-            sum_where += int(where_ct)
 
             try:
                 conds = json.loads(conds_json) if conds_json else []
@@ -886,22 +864,13 @@ def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
         # Only include operators actually present to keep it tidy
         op_counts = {k: v for k, v in op_counts.items() if v > 0}
 
-        averages = {
-            "q_words": round(sum_q_words / totals, 1) if totals else 0.0,
-            "n_rows": round(sum_n_rows / totals, 1) if totals else 0.0,
-            "n_cols": round(sum_n_cols / totals, 1) if totals else 0.0,
-            "where_match_count": round(sum_where / totals, 1) if totals else 0.0,
-        }
-
         return {
             "total": totals,
             "splits": splits,
             "aggregations": aggs,
             "operators": op_counts,
-            "conds_per_query": conds_hist,
-            "hard_ops": hard_ops,
-            "averages": averages,
         }
+
     finally:
         conn.close()
 
@@ -1005,7 +974,31 @@ def main():
 
         summary = build_top500(extracted_root=workdir, out_db=out_db)
 
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    if "validation_only" in summary and summary["validation_only"]:
+        eprint(f"[summary] Database: {summary['database_path']}")
+        validation = summary["validation"]
+        eprint(f"[summary] Validation: {validation['successful_queries']}/{validation['total_queries']} queries successful ({(validation['successful_queries']/max(validation['total_queries'],1)*100):.1f}%)")
+        if validation['failed_queries'] > 0:
+            eprint(f"[summary] Failed queries: {validation['failed_queries']}")
+    else:
+        eprint(f"[summary] Total questions processed: {summary['total_questions_all_splits']}")
+        eprint(f"[summary] Top 500 questions selected: {summary['top500_questions']}")
+        eprint(f"[summary] Top 500 tables: {summary['top500_tables']}")
+        eprint(f"[summary] Total rows across tables: {summary['top500_rows_across_tables']}")
+        eprint(f"[summary] Where match counts computed: {summary['where_match_counts_computed']}")
+        validation = summary["validation"]
+        eprint(f"[summary] Validation: {validation['successful_queries']}/{validation['total_queries']} queries successful ({(validation['successful_queries']/max(validation['total_queries'],1)*100):.1f}%)")
+        eprint(f"[summary] Final database: {summary['final_db']}")
+
+    # Distribution stats
+    dist = summary["top500_distribution"]
+    eprint(f"[distribution] Total: {dist['total']}")
+    splits_str = ", ".join([f"{k}:{v}" for k, v in dist['splits'].items()])
+    eprint(f"[distribution] Splits: {splits_str}")
+    aggs_str = ", ".join([f"{k}:{v}" for k, v in dist['aggregations'].items() if v > 0])
+    eprint(f"[distribution] Aggregations: {aggs_str}")
+    ops_str = ", ".join([f"{k}:{v}" for k, v in dist['operators'].items() if v > 0])
+    eprint(f"[distribution] Operators: {ops_str}")
 
 
 if __name__ == "__main__":
