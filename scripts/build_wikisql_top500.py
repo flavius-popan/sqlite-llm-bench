@@ -658,23 +658,19 @@ def build_final_db(intermediate_conn: sqlite3.Connection,
                 page_id TEXT
             );
 
-            CREATE VIEW v_tables_browse AS
-            SELECT
-              table_name,
-              split,
-              n_rows,
-              page_title,
-              section_title,
-              caption
-            FROM wikisql_tables;
-
             CREATE VIEW v_top500_questions AS
             SELECT
-              table_name,
-              question,
-              sql_text
-            FROM questions
-            ORDER BY difficulty_score_plus DESC;
+              q.question,
+              q.sql_text,
+              q.table_name,
+              wt.n_rows,
+              wt.page_title,
+              wt.section_title,
+              wt.caption
+            FROM questions q
+            JOIN wikisql_tables wt
+              ON wt.table_name = q.table_name
+            ORDER BY q.difficulty_score_plus DESC;
         """)
 
         cols_q = [c[1] for c in intermediate_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
