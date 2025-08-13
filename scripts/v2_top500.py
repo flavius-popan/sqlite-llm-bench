@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
 import argparse
 import bz2
 import concurrent.futures as cf
@@ -86,6 +85,10 @@ def ensure_wikisql_data(data_dir: Path) -> None:
         archive.unlink()
 
 def sanitize_identifier(name: str) -> str:
+    original_name = name.strip()
+    if re.match(r'^\d{4}$', original_name):
+        return 'yr_' + original_name
+
     name = name.strip().lower()
     allowed = set(string.ascii_lowercase + string.digits + "_")
     cleaned = []
@@ -100,7 +103,10 @@ def sanitize_identifier(name: str) -> str:
     if not s:
         s = "col"
     if s[0].isdigit():
-        s = "_" + s
+        if re.match(r'^\d{4}$', s):
+            s = "yr_" + s
+        else:
+            s = "col_" + s
     return s
 
 def unique_names(names: List[str]) -> List[str]:
