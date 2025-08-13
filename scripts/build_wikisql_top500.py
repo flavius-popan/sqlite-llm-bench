@@ -341,6 +341,177 @@ def estimate_expected_rows(n_rows: int,
     p = min(max(p, 1.0 / max(n_rows, 1)), 1.0)
     return p * n_rows
 
+def process_questions_and_tables(all_questions, tables_meta, table_stats, valid_map):
+    """Process questions and tables data, returning batch data for database insertion."""
+    q_batch = []
+    for q in all_questions:
+        tm = tables_meta[q["table_id"]]
+        sql_text, proper_cols = build_sql_text(tm.table_id, tm.header, q["agg"], q["sel"], q["conds"])
+        stats = table_stats.get((q["split"], q["table_id"]), {"n_rows": 0})
+        n_rows = stats.get("n_rows", 0)
+        per_col = {}
+        for cidx in set([c[0] for c in q["conds"]]):
+            nn = stats.get(f"col{cidx}_nonnull", n_rows)
+            nd = stats.get(f"col{cidx}_ndistinct", max(1, n_rows))
+            per_col[cidx] = (nn, nd)
+        exp_rows = estimate_expected_rows(n_rows, q["conds"], per_col)
+        q_batch.append((
+            q["uid"], q["split"], q["table_id"], q["question"], q["agg"], q["sel"],
+            json.dumps(q["conds"]), int(valid_map.get(q["uid"], False)), count_words(q["question"]),
+            sql_text, json.dumps(proper_cols), float(exp_rows)
+        ))
+
+    t_batch = []
+    for split in ["train", "dev", "test"]:
+        for t_id, tm in tables_meta.items():
+            if (split, t_id) not in table_stats:
+                continue
+            n_rows = table_stats[(split, t_id)]["n_rows"]
+            clean_cols = unique_names([sanitize_identifier(h) for h in tm.header])
+            t_batch.append((split, t_id, json.dumps(tm.header), json.dumps(tm.types),
+                            tm.page_title, tm.section_title, tm.caption, tm.page_id,
+                            n_rows, len(tm.header), json.dumps(clean_cols)))
+
+    return q_batch, t_batch
+
+def setup_in_memory_database():
+    """Set up the in-memory SQLite database with optimized settings."""
+    mem = sqlite3.connect(":memory:")
+    mem.execute("PRAGMA journal_mode = MEMORY;")
+    mem.execute("PRAGMA synchronous = OFF;")
+    mem.execute("PRAGMA temp_store = MEMORY;")
+    mem.execute("PRAGMA cache_size = -200000;")  # 200MB cache
+    mem.create_function("json_array_length", 1, _json_array_length)
+
+    mem.executescript("""
+    CREATE TABLE questions_raw(
+        uid INTEGER PRIMARY KEY,
+        split TEXT NOT NULL,
+        table_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        agg INTEGER NOT NULL,
+        sel INTEGER NOT NULL,
+        conds_json TEXT NOT NULL,
+        is_valid INTEGER NOT NULL,
+        q_words INTEGER NOT NULL,
+        sql_text TEXT NOT NULL,
+        clean_colnames_json TEXT NOT NULL,
+        expected_rows REAL NOT NULL
+    );
+
+    CREATE TABLE wikisql_tables(
+        split TEXT NOT NULL,
+        table_id TEXT NOT NULL,
+        header_json TEXT NOT NULL,
+        types_json  TEXT NOT NULL,
+        page_title TEXT,
+        section_title TEXT,
+        caption TEXT,
+        page_id INTEGER,
+        n_rows INTEGER NOT NULL,
+        n_cols INTEGER NOT NULL,
+        clean_colnames_json TEXT NOT NULL,
+        PRIMARY KEY (split, table_id)
+    );
+    """)
+
+    return mem
+
+def create_output_database(args, mem):
+    """Create the final output database with processed data."""
+    print(f"Selecting top {args.k} from {mem.execute('SELECT COUNT(*) FROM top_questions').fetchone()[0]} candidates...")
+    out = args.out
+    if out.exists():
+        out.unlink()
+    dst = sqlite3.connect(out)
+    dst.execute("PRAGMA journal_mode = WAL;")
+    dst.execute("PRAGMA synchronous = NORMAL;")
+
+    dst.executescript("""
+    CREATE TABLE questions(
+      uid INTEGER PRIMARY KEY,
+      split TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      question TEXT NOT NULL,
+      agg INTEGER NOT NULL,
+      sel INTEGER NOT NULL,
+      conds_json TEXT NOT NULL,
+      sql_text TEXT NOT NULL,
+      q_words INTEGER NOT NULL,
+      n_rows INTEGER NOT NULL,
+      n_cols INTEGER NOT NULL,
+      cond_count INTEGER NOT NULL,
+      op_rarity_sum REAL NOT NULL,
+      has_agg INTEGER NOT NULL,
+      agg_rarity REAL NOT NULL,
+      difficulty_score REAL NOT NULL,
+      expected_rows REAL NOT NULL
+    );
+
+    CREATE TABLE wikisql_tables(
+      split TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      header_json TEXT NOT NULL,
+      types_json  TEXT NOT NULL,
+      clean_colnames_json TEXT NOT NULL,
+      page_title TEXT,
+      section_title TEXT,
+      caption TEXT,
+      page_id INTEGER,
+      n_rows INTEGER NOT NULL,
+      n_cols INTEGER NOT NULL,
+      PRIMARY KEY (split, table_id)
+    );
+    """)
+
+    rows = mem.execute("""
+        SELECT uid, split, table_id, 'table_' || REPLACE(table_id, '-', '_') as table_name,
+               question, agg, sel, conds_json,
+               sql_text, q_words, n_rows, n_cols,
+               cond_count, op_rarity_sum, has_agg, agg_rarity,
+               difficulty_score, expected_rows
+        FROM topk
+    """).fetchall()
+    dst.executemany("""
+        INSERT INTO questions
+        (uid, split, table_id, table_name, question, agg, sel, conds_json, sql_text, q_words, n_rows, n_cols,
+         cond_count, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, rows)
+
+    meta_rows = mem.execute("""
+        SELECT DISTINCT t.split, t.table_id, t.header_json, t.types_json, t.clean_colnames_json,
+                        t.page_title, t.section_title, t.caption, t.page_id, t.n_rows, t.n_cols
+        FROM wikisql_tables t
+        JOIN topk k ON (k.split=t.split AND k.table_id=t.table_id)
+    """).fetchall()
+    dst.executemany("""
+        INSERT INTO wikisql_tables
+        (split, table_id, header_json, types_json, clean_colnames_json,
+         page_title, section_title, caption, page_id, n_rows, n_cols)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, meta_rows)
+
+    return dst, meta_rows
+
+def copy_tables_to_output(dst, meta_rows, args):
+    """Copy referenced tables from source databases to output database."""
+    used = {(r[0], r[1]) for r in meta_rows}
+    extracted_dir = args.data_dir / "data"
+    for split in ["train", "dev", "test"]:
+        dst.execute(f"ATTACH DATABASE ? AS {split}_db", (str(extracted_dir / f"{split}.db"),))
+
+    tables_copied = 0
+    for split, table_id in sorted(used):
+        clean_cols = json.loads(dst.execute("""
+            SELECT clean_colnames_json FROM wikisql_tables
+            WHERE split=? AND table_id=?""", (split, table_id)).fetchone()[0])
+        select_list = ", ".join([f'"col{i}" AS "{clean_cols[i]}"' for i in range(len(clean_cols))])
+        derived_name = derived_table_name(table_id)
+        dst.execute(f'CREATE TABLE "{derived_name}" AS SELECT {select_list} FROM {split}_db."{derived_name}"')
+        tables_copied += 1
+
 def main():
     """Orchestrate WikiSQL top-K selection process."""
     ap = argparse.ArgumentParser(description="Build a top-K WikiSQL SQLite DB (no boost).")
@@ -406,63 +577,10 @@ def main():
 
     valid_count = sum(1 for v in valid_map.values() if v)
     print(f"Valid questions: {valid_count}/{len(valid_map)} ({100*valid_count/len(valid_map):.1f}%)")
-    # In-memory for speed
-    mem = sqlite3.connect(":memory:")
-    mem.execute("PRAGMA journal_mode = MEMORY;")
-    mem.execute("PRAGMA synchronous = OFF;")
-    mem.execute("PRAGMA temp_store = MEMORY;")
-    mem.execute("PRAGMA cache_size = -200000;")  # 200MB cache
-    mem.create_function("json_array_length", 1, _json_array_length)
 
-    mem.executescript("""
-    CREATE TABLE questions_raw(
-        uid INTEGER PRIMARY KEY,
-        split TEXT NOT NULL,
-        table_id TEXT NOT NULL,
-        question TEXT NOT NULL,
-        agg INTEGER NOT NULL,
-        sel INTEGER NOT NULL,
-        conds_json TEXT NOT NULL,
-        is_valid INTEGER NOT NULL,
-        q_words INTEGER NOT NULL,
-        sql_text TEXT NOT NULL,
-        clean_colnames_json TEXT NOT NULL,
-        expected_rows REAL NOT NULL
-    );
+    mem = setup_in_memory_database()
 
-    CREATE TABLE wikisql_tables(
-        split TEXT NOT NULL,
-        table_id TEXT NOT NULL,
-        header_json TEXT NOT NULL,
-        types_json  TEXT NOT NULL,
-        page_title TEXT,
-        section_title TEXT,
-        caption TEXT,
-        page_id INTEGER,
-        n_rows INTEGER NOT NULL,
-        n_cols INTEGER NOT NULL,
-        clean_colnames_json TEXT NOT NULL,
-        PRIMARY KEY (split, table_id)
-    );
-    """)
-
-    q_batch = []
-    for q in all_questions:
-        tm = tables_meta[q["table_id"]]
-        sql_text, proper_cols = build_sql_text(tm.table_id, tm.header, q["agg"], q["sel"], q["conds"])
-        stats = table_stats.get((q["split"], q["table_id"]), {"n_rows": 0})
-        n_rows = stats.get("n_rows", 0)
-        per_col = {}
-        for cidx in set([c[0] for c in q["conds"]]):
-            nn = stats.get(f"col{cidx}_nonnull", n_rows)
-            nd = stats.get(f"col{cidx}_ndistinct", max(1, n_rows))
-            per_col[cidx] = (nn, nd)
-        exp_rows = estimate_expected_rows(n_rows, q["conds"], per_col)
-        q_batch.append((
-            q["uid"], q["split"], q["table_id"], q["question"], q["agg"], q["sel"],
-            json.dumps(q["conds"]), int(valid_map.get(q["uid"], False)), count_words(q["question"]),
-            sql_text, json.dumps(proper_cols), float(exp_rows)
-        ))
+    q_batch, t_batch = process_questions_and_tables(all_questions, tables_meta, table_stats, valid_map)
 
     mem.executemany("""
         INSERT INTO questions_raw
@@ -470,16 +588,6 @@ def main():
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, q_batch)
 
-    t_batch = []
-    for split in ["train", "dev", "test"]:
-        for t_id, tm in tables_meta.items():
-            if (split, t_id) not in table_stats:
-                continue
-            n_rows = table_stats[(split, t_id)]["n_rows"]
-            clean_cols = unique_names([sanitize_identifier(h) for h in tm.header])
-            t_batch.append((split, t_id, json.dumps(tm.header), json.dumps(tm.types),
-                            tm.page_title, tm.section_title, tm.caption, tm.page_id,
-                            n_rows, len(tm.header), json.dumps(clean_cols)))
     mem.executemany("""
         INSERT INTO wikisql_tables
         (split, table_id, header_json, types_json, page_title, section_title, caption, page_id, n_rows, n_cols, clean_colnames_json)
@@ -555,92 +663,9 @@ def main():
     LIMIT {int(args.k)};
     """)
 
-    print(f"Selecting top {args.k} from {mem.execute('SELECT COUNT(*) FROM top_questions').fetchone()[0]} candidates...")
-    out = args.out
-    if out.exists():
-        out.unlink()
-    dst = sqlite3.connect(out)
-    dst.execute("PRAGMA journal_mode = WAL;")
-    dst.execute("PRAGMA synchronous = NORMAL;")
+    dst, meta_rows = create_output_database(args, mem)
 
-    dst.executescript("""
-    CREATE TABLE questions(
-      uid INTEGER PRIMARY KEY,
-      split TEXT NOT NULL,
-      table_id TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      question TEXT NOT NULL,
-      agg INTEGER NOT NULL,
-      sel INTEGER NOT NULL,
-      conds_json TEXT NOT NULL,
-      sql_text TEXT NOT NULL,
-      q_words INTEGER NOT NULL,
-      n_rows INTEGER NOT NULL,
-      n_cols INTEGER NOT NULL,
-      cond_count INTEGER NOT NULL,
-      op_rarity_sum REAL NOT NULL,
-      has_agg INTEGER NOT NULL,
-      agg_rarity REAL NOT NULL,
-      difficulty_score REAL NOT NULL,
-      expected_rows REAL NOT NULL
-    );
-
-    CREATE TABLE wikisql_tables(
-      split TEXT NOT NULL,
-      table_id TEXT NOT NULL,
-      header_json TEXT NOT NULL,
-      types_json  TEXT NOT NULL,
-      clean_colnames_json TEXT NOT NULL,
-      page_title TEXT,
-      section_title TEXT,
-      caption TEXT,
-      page_id INTEGER,
-      n_rows INTEGER NOT NULL,
-      n_cols INTEGER NOT NULL,
-      PRIMARY KEY (split, table_id)
-    );
-    """)
-
-    rows = mem.execute("""
-        SELECT uid, split, table_id, 'table_' || REPLACE(table_id, '-', '_') as table_name,
-               question, agg, sel, conds_json,
-               sql_text, q_words, n_rows, n_cols,
-               cond_count, op_rarity_sum, has_agg, agg_rarity,
-               difficulty_score, expected_rows
-        FROM topk
-    """).fetchall()
-    dst.executemany("""
-        INSERT INTO questions
-        (uid, split, table_id, table_name, question, agg, sel, conds_json, sql_text, q_words, n_rows, n_cols,
-         cond_count, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, rows)
-    meta_rows = mem.execute("""
-        SELECT DISTINCT t.split, t.table_id, t.header_json, t.types_json, t.clean_colnames_json,
-                        t.page_title, t.section_title, t.caption, t.page_id, t.n_rows, t.n_cols
-        FROM wikisql_tables t
-        JOIN topk k ON (k.split=t.split AND k.table_id=t.table_id)
-    """).fetchall()
-    dst.executemany("""
-        INSERT INTO wikisql_tables
-        (split, table_id, header_json, types_json, clean_colnames_json,
-         page_title, section_title, caption, page_id, n_rows, n_cols)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, meta_rows)
-    used = {(r[0], r[1]) for r in meta_rows}
-    extracted_dir = args.data_dir / "data"
-    for split in ["train", "dev", "test"]:
-        dst.execute(f"ATTACH DATABASE ? AS {split}_db", (str(extracted_dir / f"{split}.db"),))
-
-    tables_copied = 0
-    for split, table_id in sorted(used):
-        clean_cols = json.loads(dst.execute("""
-            SELECT clean_colnames_json FROM wikisql_tables
-            WHERE split=? AND table_id=?""", (split, table_id)).fetchone()[0])
-        select_list = ", ".join([f'"col{i}" AS "{clean_cols[i]}"' for i in range(len(clean_cols))])
-        derived_name = derived_table_name(table_id)
-        dst.execute(f'CREATE TABLE "{derived_name}" AS SELECT {select_list} FROM {split}_db."{derived_name}"')
-        tables_copied += 1
+    copy_tables_to_output(dst, meta_rows, args)
 
     dst.executescript("""
         CREATE VIEW v_top500_questions AS
