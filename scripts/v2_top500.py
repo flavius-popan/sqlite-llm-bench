@@ -37,10 +37,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Any
+import shutil
 
 # ------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------
+
+DATASET_VERSION = 1
 
 DATA_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
 
@@ -75,7 +78,7 @@ WEIGHTS = {
 
 # Default values for command line arguments
 DEFAULT_DATA_DIR = "data/raw/wikisql"
-DEFAULT_OUT = "wikisql_top500.db"
+DEFAULT_OUT = f"data/processed/wikisql/wikisql-top500-v{DATASET_VERSION}.db"
 DEFAULT_K = 500
 DEFAULT_PROCESSES = 3
 
@@ -98,22 +101,43 @@ def derived_table_name(table_id: str) -> str:
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
-def ensure_wikisql_data(data_dir: Path) -> None:
-    """Ensure WikiSQL files exist under data_dir; otherwise download & extract."""
+def ensure_wikisql_data(data_dir: Path) -> Dict[str, Any]:
+    """Ensure WikiSQL files exist under data_dir; otherwise download & extract.
+    Returns cleanup info for tracking what was downloaded/extracted."""
     expected = ["train.jsonl", "dev.jsonl", "test.jsonl",
                 "tables.jsonl", "train.db", "dev.db", "test.db"]
+
+    cleanup_info = {
+        "downloaded_by_us": False,
+        "extracted_by_us": False,
+        "archive_path": None
+    }
+
     if all((data_dir / f).exists() for f in expected):
-        return
+        return cleanup_info
+
     data_dir.mkdir(parents=True, exist_ok=True)
     archive = data_dir / "data.tar.bz2"
+
     if not archive.exists():
         import urllib.request
         log("Downloading WikiSQL data.tar.bz2 ...")
         urllib.request.urlretrieve(DATA_URL, archive)
+        cleanup_info["downloaded_by_us"] = True
+        cleanup_info["archive_path"] = archive
+
     log("Extracting data.tar.bz2 ...")
     with bz2.BZ2File(archive, "rb") as f_in:
         with tarfile.open(fileobj=io.BytesIO(f_in.read())) as tf:
             tf.extractall(data_dir, filter='data')
+    cleanup_info["extracted_by_us"] = True
+
+    # Clean up archive immediately after extraction if we downloaded it
+    if cleanup_info["downloaded_by_us"] and archive.exists():
+        archive.unlink()
+        log(f"Deleted archive file: {archive}")
+
+    return cleanup_info
 
 def sanitize_identifier(name: str) -> str:
     """Turn an arbitrary column header into a safe SQL identifier."""
@@ -351,9 +375,14 @@ def main():
                     help=f"Number of top questions to select. Default: {DEFAULT_K}")
     ap.add_argument("--processes", type=int, default=DEFAULT_PROCESSES,
                     help=f"Number of processes for split-parallel validation (<=3 makes sense). Default: {DEFAULT_PROCESSES}")
+    ap.add_argument("--keep-source-data", action="store_true",
+                    help="Preserve extracted source data after processing (default: False to save disk space)")
     args = ap.parse_args()
 
-    ensure_wikisql_data(args.data_dir)
+    # Ensure output directory exists
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    cleanup_info = ensure_wikisql_data(args.data_dir)
 
     # Load metadata & examples
     tables_meta = read_tables_jsonl(args.data_dir)
@@ -660,10 +689,44 @@ def main():
         derived_name = derived_table_name(table_id)
         dst.execute(f'CREATE TABLE "{derived_name}" AS SELECT {select_list} FROM {split}_db."{derived_name}"')
 
+    # Create convenience view for inspecting NL/SQL pairs and table data
+    dst.executescript("""
+        CREATE VIEW v_top500_questions AS
+        SELECT
+          q.question,
+          q.sql_text,
+          q.table_name,
+          wt.n_rows,
+          wt.page_title,
+          wt.section_title,
+          wt.caption
+        FROM questions q
+        JOIN wikisql_tables wt
+          ON wt.table_id = q.table_id AND wt.split = q.split
+        ORDER BY q.difficulty_score DESC;
+    """)
+
     # Finalize
     dst.commit()
     dst.close()
     mem.close()
+
+    # Clean up source data unless explicitly requested to keep it
+    if not args.keep_source_data and cleanup_info:
+        # Clean up extracted data if we extracted it ourselves
+        if cleanup_info.get("extracted_by_us", False):
+            extracted_data_dir = args.data_dir / "data"
+            if extracted_data_dir.exists():
+                shutil.rmtree(extracted_data_dir)
+                log(f"Deleted extracted source data: {extracted_data_dir}")
+
+            # Clean up individual split files if they exist in data_dir
+            for split_file in ["train.jsonl", "dev.jsonl", "test.jsonl", "tables.jsonl"]:
+                split_path = args.data_dir / split_file
+                if split_path.exists():
+                    split_path.unlink()
+                    log(f"Deleted source file: {split_path}")
+
     log(f"Done. Wrote {args.k} items to {out}.")
 
 
