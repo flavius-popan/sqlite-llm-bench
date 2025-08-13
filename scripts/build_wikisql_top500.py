@@ -221,9 +221,9 @@ def validate_split_files(extracted_root: Path) -> Dict[str, Dict[str, Path]]:
     return split_files
 
 
-def setup_wip_db(wip_db: Path) -> sqlite3.Connection:
+def setup_full_db(full_db: Path) -> sqlite3.Connection:
     """
-    Create the WIP database (metadata only; no raw data tables are copied here).
+    Create the full database (metadata only; no raw data tables are copied here).
     It holds:
       - wikisql_tables (metadata)
       - questions (with reconstructed sql_text)
@@ -231,13 +231,13 @@ def setup_wip_db(wip_db: Path) -> sqlite3.Connection:
       - views for scoring
       - where_matches (ambiguity boost results)
     """
-    if wip_db.exists():
-        wip_db.unlink()
+    if full_db.exists():
+        full_db.unlink()
 
-    wip_db.parent.mkdir(parents=True, exist_ok=True)
+    full_db.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(wip_db))
-    # Deterministic + fast-enough settings (durability is not critical in wip DB)
+    conn = sqlite3.connect(str(full_db))
+    # Deterministic + fast-enough settings (durability is not critical in full DB)
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")   # stable journaling
     conn.execute("PRAGMA synchronous = NORMAL;")
@@ -522,7 +522,7 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
     """
     Ambiguity boost: for each question, execute a COUNT(*) version of its sql_text
     against its source split DB. We prefix the table with the correct attached alias
-    to avoid copying raw tables into the wip DB.
+    to avoid copying raw tables into the full DB.
     """
     aliases = attach_split_aliases(conn, split_files)
     cur = conn.execute("SELECT id, split, table_name, sql_text FROM questions ORDER BY id ASC")
@@ -598,7 +598,7 @@ def select_top500(conn: sqlite3.Connection) -> None:
     """)
 
 
-def build_final_db(wip_conn: sqlite3.Connection,
+def build_final_db(full_conn: sqlite3.Connection,
                    split_files: Dict[str, Dict[str, Path]],
                    out_db: Path) -> Dict[str, int]:
     """
@@ -671,11 +671,11 @@ def build_final_db(wip_conn: sqlite3.Connection,
             ORDER BY difficulty_score_plus DESC;
         """)
 
-        cols_q = [c[1] for c in wip_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
-        cols_w = [c[1] for c in wip_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
+        cols_q = [c[1] for c in full_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
+        cols_w = [c[1] for c in full_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
 
-        q_rows = wip_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
-        w_rows = wip_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
+        q_rows = full_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
+        w_rows = full_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
 
         q_placeholders = ','.join(['?'] * len(cols_q))
         conn.executemany(f"""
@@ -695,7 +695,7 @@ def build_final_db(wip_conn: sqlite3.Connection,
             conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(split_files[split]["db"]),))
             aliases[split] = alias
 
-        tables = wip_conn.execute("""
+        tables = full_conn.execute("""
             SELECT split, table_name
             FROM top500_tables
             ORDER BY split ASC, table_name ASC
@@ -704,7 +704,7 @@ def build_final_db(wip_conn: sqlite3.Connection,
         for split, table_name in tables:
             alias = aliases[split]
 
-            header_json = wip_conn.execute(
+            header_json = full_conn.execute(
                 "SELECT header_json FROM top500_tables WHERE table_name = ?",
                 (table_name,)
             ).fetchone()[0]
@@ -878,7 +878,7 @@ def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
 def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     End-to-end pipeline:
-      1) Create wip DB (metadata only).
+      1) Create full DB (metadata only).
       2) Populate metadata (tables, questions, op_map).
       3) Create scoring views (pure-SQL features).
       4) Compute ambiguity counts (where_match_count) by executing COUNT(*) against source DBs.
@@ -887,11 +887,11 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     split_files = validate_split_files(extracted_root)
 
-    # e.g., wikisql-top500.sqlite -> wikisql-top500-wip.sqlite
-    wip_db = out_db.with_name(out_db.stem + "-wip.sqlite")
-    if wip_db.exists():
-        wip_db.unlink()
-    conn = setup_wip_db(wip_db)
+    # e.g., wikisql-top500.sqlite -> wikisql-full.sqlite
+    full_db = out_db.with_name("wikisql-full.sqlite")
+    if full_db.exists():
+        full_db.unlink()
+    conn = setup_full_db(full_db)
 
     try:
         op_map = build_operator_mapping(conn, split_files)
@@ -918,7 +918,7 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
             "where_match_counts_computed": n_amb,
             "validation": validation_results,
             "top500_distribution": distribution,
-            "wip_db": str(wip_db),
+            "full_db": str(full_db),
             "final_db": str(out_db),
         }
     finally:
