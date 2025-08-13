@@ -514,7 +514,7 @@ def copy_tables_to_output(dst, meta_rows, args):
 
 def main():
     """Orchestrate WikiSQL top-K selection process."""
-    ap = argparse.ArgumentParser(description="Build a top-K WikiSQL SQLite DB (no boost).")
+    ap = argparse.ArgumentParser(description="Build a top-K WikiSQL SQLite DB")
     ap.add_argument("--data-dir", type=Path, default=Path(DEFAULT_DATA_DIR),
                     help=f"Directory containing WikiSQL data (jsonl and split .db files). Default: {DEFAULT_DATA_DIR}")
     ap.add_argument("--out", type=Path, default=Path(DEFAULT_OUT),
@@ -522,7 +522,7 @@ def main():
     ap.add_argument("--k", type=int, default=DEFAULT_K,
                     help=f"Number of top questions to select. Default: {DEFAULT_K}")
     ap.add_argument("--processes", type=int, default=DEFAULT_PROCESSES,
-                    help=f"Number of processes for split-parallel validation (<=3 makes sense). Default: {DEFAULT_PROCESSES}")
+                    help=f"Number of processes for split-parallel validation. Default: {DEFAULT_PROCESSES}")
     ap.add_argument("--keep-source-data", action="store_true",
                     help="Preserve extracted source data after processing (default: False to save disk space)")
     args = ap.parse_args()
