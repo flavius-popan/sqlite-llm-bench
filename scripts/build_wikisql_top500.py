@@ -576,6 +576,80 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
     return updated
 
 
+def filter_valid_queries(conn: sqlite3.Connection, split_files: Dict[str, Dict[str, Path]]) -> None:
+    """Filter queries to only include those that return non-null data using original column structure."""
+    eprint("[filtering] Testing queries for non-null results...")
+
+    # Attach split databases
+    aliases = attach_split_aliases(conn, split_files)
+
+    try:
+        # Get all questions with their SQL, but need to modify SQL to use original column names
+        questions = conn.execute("""
+            SELECT id, table_name, sql_text, split, agg
+            FROM v_q_difficulty
+            ORDER BY id ASC
+        """).fetchall()
+
+        valid_ids = []
+        null_count = 0
+        empty_count = 0
+
+        for question_id, table_name, sql_text, split, agg in questions:
+            try:
+                # Convert SQL to use original column names (col0, col1, etc.)
+                original_sql = convert_sql_to_original_columns(conn, sql_text, table_name)
+
+                # Execute the query against the original split database
+                result = conn.execute(original_sql).fetchall()
+
+                # Check if query returns valid non-null data
+                if not result:
+                    empty_count += 1
+                elif result[0][0] is None:
+                    null_count += 1
+                else:
+                    # Query returns non-null data
+                    valid_ids.append(question_id)
+
+            except Exception:
+                # Skip queries that fail to execute
+                continue
+
+        # Create table of valid query IDs
+        conn.execute("DROP TABLE IF EXISTS valid_queries")
+        conn.execute("CREATE TABLE valid_queries (id INTEGER PRIMARY KEY)")
+        conn.executemany("INSERT INTO valid_queries (id) VALUES (?)", [(qid,) for qid in valid_ids])
+        conn.commit()
+
+        eprint(f"[filtering] Found {len(valid_ids)} queries with non-null results")
+        eprint(f"[filtering] Filtered out {null_count} null-result queries, {empty_count} empty-result queries")
+
+    finally:
+        detach_split_aliases(conn, aliases)
+
+
+def convert_sql_to_original_columns(conn: sqlite3.Connection, sql_text: str, table_name: str) -> str:
+    """Convert SQL using proper column names to use original col0, col1, etc. column names."""
+    # Get the header for this table
+    header_json = conn.execute(
+        "SELECT header_json FROM wikisql_tables WHERE table_name = ?",
+        (table_name,)
+    ).fetchone()[0]
+    headers = json.loads(header_json)
+    proper_column_names = ensure_unique_column_names(headers)
+
+    # Replace each proper column name with its corresponding col{i} name
+    original_sql = sql_text
+    for i, proper_name in enumerate(proper_column_names):
+        quoted_proper_name = quote_ident(proper_name)
+        original_column = f"col{i}"
+        original_sql = original_sql.replace(quoted_proper_name, original_column)
+
+    return original_sql
+
+
+
 def select_top500(conn: sqlite3.Connection) -> None:
     """Create final difficulty_plus scores, pick deterministic top 500."""
     conn.executescript(f"""
@@ -593,6 +667,7 @@ def select_top500(conn: sqlite3.Connection) -> None:
         CREATE TABLE top500_questions AS
         SELECT *
         FROM v_q_difficulty_plus
+        WHERE id IN (SELECT id FROM valid_queries)
         ORDER BY difficulty_score_plus DESC, id ASC
         LIMIT 500;
 
@@ -773,6 +848,9 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
             "total_queries": len(questions),
             "successful_queries": 0,
             "failed_queries": 0,
+            "empty_result_queries": 0,
+            "null_result_queries": 0,
+            "valid_data_queries": 0,
             "errors": [],
             "query_types": {"SELECT": 0, "SELECT_AGG": 0},
             "splits": {"train": 0, "dev": 0, "test": 0},
@@ -791,6 +869,14 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
             try:
                 result = conn.execute(sql_text).fetchall()
                 validation_results["successful_queries"] += 1
+
+                # Check result quality
+                if not result:
+                    validation_results["empty_result_queries"] += 1
+                elif result[0][0] is None:
+                    validation_results["null_result_queries"] += 1
+                else:
+                    validation_results["valid_data_queries"] += 1
 
                 is_agg_query = " AVG(" in sql_text or " SUM(" in sql_text or " MIN(" in sql_text or " MAX(" in sql_text or " COUNT(" in sql_text
                 if len(result) > 1 and is_agg_query:
@@ -813,7 +899,9 @@ def validate_all_queries(db_path: Path) -> Dict[str, Any]:
         del validation_results["tables_tested"]
 
         success_rate = (validation_results["successful_queries"] / max(validation_results["total_queries"], 1)) * 100
+        valid_data_rate = (validation_results["valid_data_queries"] / max(validation_results["total_queries"], 1)) * 100
         eprint(f"[validation] Results: {validation_results['successful_queries']}/{validation_results['total_queries']} queries successful ({success_rate:.1f}%)")
+        eprint(f"[validation] Valid data: {validation_results['valid_data_queries']}/{validation_results['total_queries']} queries return non-null data ({valid_data_rate:.1f}%)")
 
         if validation_results["failed_queries"] > 0:
             eprint(f"[validation] WARNING: {validation_results['failed_queries']} queries failed!")
@@ -901,6 +989,8 @@ def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool 
         total_questions = process_questions(conn, split_files, table_headers, op_map)
         create_scoring_views(conn)
         n_amb = compute_where_match_counts(conn, split_files)
+
+        filter_valid_queries(conn, split_files)
         select_top500(conn)
 
         sum_rows = conn.execute("SELECT SUM(n_rows) FROM top500_tables").fetchone()[0]
