@@ -16,7 +16,6 @@ Scoring (pure SQL; constants below):
     + 0.001 * MIN(n_rows, 10000)
     + 0.25 * n_cols
     + 0.05 * q_words
-    + 0.5 * has_hard_ops
 
 Notes:
 - We also compute an *expected_rows* (schema-only estimate) to help reason about
@@ -63,8 +62,6 @@ OP_MAP = {
     5: "!=",
 }
 
-HARD_OPS = {3, 4, 5}  # >=, <=, !=
-
 # Scoring weights (keep in one place, easy to tweak)
 WEIGHTS = {
     "cond_count": 1.5,
@@ -74,7 +71,6 @@ WEIGHTS = {
     "n_rows": 0.001,  # applied to MIN(n_rows, 10000)
     "n_cols": 0.25,
     "q_words": 0.05,
-    "has_hard_ops": 0.5,
 }
 
 # Default values for command line arguments
@@ -319,7 +315,7 @@ def estimate_expected_rows(n_rows: int,
     For each condition on column j with (nonnull_count, n_distinct):
       - '='  -> p ≈ (nonnull/n_rows) * (1 / n_distinct)
       - '!=' -> p ≈ (nonnull/n_rows) * (1 - 1 / n_distinct)
-      - {>,<,>=,<=} -> p ≈ (nonnull/n_rows) * 0.33  # small tables: rough one-third
+      - {>,<} -> p ≈ (nonnull/n_rows) * 0.33  # small tables: rough one-third
     Combine assuming independence; clamp to [1/n_rows, 1] if any conds exist.
     """
     if n_rows <= 0:
@@ -525,16 +521,6 @@ def main():
          ON os.op_idx = json_extract(j.value,'$[1]')
     GROUP BY q.uid;
 
-    -- per-question has_hard_ops
-    CREATE TEMP TABLE has_hard AS
-    SELECT q.uid,
-           CASE WHEN EXISTS (
-             SELECT 1
-             FROM json_each(q.conds_json) jj
-             WHERE json_extract(jj.value,'$[1]') IN (3,4,5)
-           ) THEN 1 ELSE 0 END AS has_hard_ops
-    FROM questions_raw q;
-
     -- per-question cond_count
     CREATE TEMP TABLE cond_counts AS
     SELECT uid, json_array_length(conds_json) AS cond_count
@@ -557,7 +543,7 @@ def main():
       q.sql_text, q.clean_colnames_json,
       t.header_json, t.types_json, t.page_title, t.section_title, t.caption, t.page_id,
       t.n_rows, t.n_cols, q.q_words, q.expected_rows,
-      cc.cond_count, hr.has_hard_ops, ors.op_rarity_sum, af.has_agg, af.agg_rarity,
+      cc.cond_count, ors.op_rarity_sum, af.has_agg, af.agg_rarity,
       -- difficulty score (no boosts)
       ({WEIGHTS["cond_count"]} * cc.cond_count) +
       ({WEIGHTS["op_rarity_sum"]} * ors.op_rarity_sum) +
@@ -565,13 +551,11 @@ def main():
       ({WEIGHTS["agg_rarity"]} * af.agg_rarity) +
       ({WEIGHTS["n_rows"]} * MIN(t.n_rows, 10000)) +
       ({WEIGHTS["n_cols"]} * t.n_cols) +
-      ({WEIGHTS["q_words"]} * q.q_words) +
-      ({WEIGHTS["has_hard_ops"]} * hr.has_hard_ops)
+      ({WEIGHTS["q_words"]} * q.q_words)
       AS difficulty_score
     FROM questions_raw q
     JOIN wikisql_tables t ON (t.split=q.split AND t.table_id=q.table_id)
     LEFT JOIN cond_counts cc ON cc.uid=q.uid
-    LEFT JOIN has_hard hr ON hr.uid=q.uid
     LEFT JOIN op_rarity_sum ors ON ors.uid=q.uid
     LEFT JOIN agg_feats af ON af.uid=q.uid
     WHERE q.is_valid=1;
@@ -608,7 +592,6 @@ def main():
       n_rows INTEGER NOT NULL,
       n_cols INTEGER NOT NULL,
       cond_count INTEGER NOT NULL,
-      has_hard_ops INTEGER NOT NULL,
       op_rarity_sum REAL NOT NULL,
       has_agg INTEGER NOT NULL,
       agg_rarity REAL NOT NULL,
@@ -637,15 +620,15 @@ def main():
         SELECT uid, split, table_id, 'table_' || REPLACE(table_id, '-', '_') as table_name,
                question, agg, sel, conds_json,
                sql_text, q_words, n_rows, n_cols,
-               cond_count, has_hard_ops, op_rarity_sum, has_agg, agg_rarity,
+               cond_count, op_rarity_sum, has_agg, agg_rarity,
                difficulty_score, expected_rows
         FROM topk
     """).fetchall()
     dst.executemany("""
         INSERT INTO questions
         (uid, split, table_id, table_name, question, agg, sel, conds_json, sql_text, q_words, n_rows, n_cols,
-         cond_count, has_hard_ops, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         cond_count, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
 
     meta_rows = mem.execute("""
