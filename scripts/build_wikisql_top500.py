@@ -7,7 +7,7 @@ CLI:
 
 Defaults:
   --src defaults to the canonical GitHub raw: https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2
-  --out defaults to: data/processed/wikisql/wikisql-top500.sqlite
+  --out defaults to: data/processed/wikisql/wikisql-top500-v{VERSION}.sqlite
 """
 
 import argparse
@@ -20,8 +20,10 @@ import tarfile
 from pathlib import Path
 from typing import Any, Dict, List
 
+DATASET_VERSION = 1
+
 DEFAULT_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
-DEFAULT_OUT = "data/processed/wikisql/wikisql-top500.sqlite"
+DEFAULT_OUT = f"data/processed/wikisql/wikisql-top500-v{DATASET_VERSION}.sqlite"
 
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 
@@ -977,8 +979,7 @@ def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool 
     """
     split_files = validate_split_files(extracted_root)
 
-    # e.g., wikisql-top500.sqlite -> wikisql-intermediate.sqlite
-    intermediate_db = out_db.with_name("wikisql-intermediate.sqlite")
+    intermediate_db = out_db.with_name(f"wikisql-intermediate-v{DATASET_VERSION}.sqlite")
     if intermediate_db.exists():
         intermediate_db.unlink()
     conn = setup_intermediate_db(intermediate_db)
