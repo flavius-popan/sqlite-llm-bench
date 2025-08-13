@@ -48,7 +48,7 @@ def download_to_bytes(url: str) -> bytes:
     return r.content
 
 
-def extract_tar_bz2(archive: Path, dest_dir: Path) -> Path:
+def extract_tar_bz2(archive: Path, dest_dir: Path, delete_archive: bool = True) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     # Use tarfile's member filtering to avoid path traversal; extract deterministically
     with tarfile.open(archive, mode="r:bz2") as tar:
@@ -63,6 +63,12 @@ def extract_tar_bz2(archive: Path, dest_dir: Path) -> Path:
             return member
         safe_members = [m for m in members if _safe(m) is not None]
         tar.extractall(path=dest_dir, members=safe_members, filter='data')
+
+    # Delete the archive file after successful extraction
+    if delete_archive and archive.exists():
+        archive.unlink()
+        eprint(f"Deleted archive file: {archive}")
+
     return dest_dir
 
 
@@ -221,9 +227,9 @@ def validate_split_files(extracted_root: Path) -> Dict[str, Dict[str, Path]]:
     return split_files
 
 
-def setup_full_db(full_db: Path) -> sqlite3.Connection:
+def setup_intermediate_db(intermediate_db: Path) -> sqlite3.Connection:
     """
-    Create the full database (metadata only; no raw data tables are copied here).
+    Create the intermediate database (metadata only; no raw data tables are copied here).
     It holds:
       - wikisql_tables (metadata)
       - questions (with reconstructed sql_text)
@@ -231,13 +237,13 @@ def setup_full_db(full_db: Path) -> sqlite3.Connection:
       - views for scoring
       - where_matches (ambiguity boost results)
     """
-    if full_db.exists():
-        full_db.unlink()
+    if intermediate_db.exists():
+        intermediate_db.unlink()
 
-    full_db.parent.mkdir(parents=True, exist_ok=True)
+    intermediate_db.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(full_db))
-    # Deterministic + fast-enough settings (durability is not critical in full DB)
+    conn = sqlite3.connect(str(intermediate_db))
+    # Deterministic + fast-enough settings (durability is not critical in intermediate DB)
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")   # stable journaling
     conn.execute("PRAGMA synchronous = NORMAL;")
@@ -522,7 +528,7 @@ def compute_where_match_counts(conn: sqlite3.Connection, split_files: Dict[str, 
     """
     Ambiguity boost: for each question, execute a COUNT(*) version of its sql_text
     against its source split DB. We prefix the table with the correct attached alias
-    to avoid copying raw tables into the full DB.
+    to avoid copying raw tables into the intermediate DB.
     """
     aliases = attach_split_aliases(conn, split_files)
     cur = conn.execute("SELECT id, split, table_name, sql_text FROM questions ORDER BY id ASC")
@@ -598,7 +604,7 @@ def select_top500(conn: sqlite3.Connection) -> None:
     """)
 
 
-def build_final_db(full_conn: sqlite3.Connection,
+def build_final_db(intermediate_conn: sqlite3.Connection,
                    split_files: Dict[str, Dict[str, Path]],
                    out_db: Path) -> Dict[str, int]:
     """
@@ -671,11 +677,11 @@ def build_final_db(full_conn: sqlite3.Connection,
             ORDER BY difficulty_score_plus DESC;
         """)
 
-        cols_q = [c[1] for c in full_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
-        cols_w = [c[1] for c in full_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
+        cols_q = [c[1] for c in intermediate_conn.execute("PRAGMA table_info(top500_questions)").fetchall()]
+        cols_w = [c[1] for c in intermediate_conn.execute("PRAGMA table_info(top500_tables)").fetchall()]
 
-        q_rows = full_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
-        w_rows = full_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
+        q_rows = intermediate_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_q))} FROM top500_questions ORDER BY difficulty_score_plus DESC, id ASC").fetchall()
+        w_rows = intermediate_conn.execute(f"SELECT {', '.join(map(quote_ident, cols_w))} FROM top500_tables ORDER BY table_name ASC").fetchall()
 
         q_placeholders = ','.join(['?'] * len(cols_q))
         conn.executemany(f"""
@@ -695,7 +701,7 @@ def build_final_db(full_conn: sqlite3.Connection,
             conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(split_files[split]["db"]),))
             aliases[split] = alias
 
-        tables = full_conn.execute("""
+        tables = intermediate_conn.execute("""
             SELECT split, table_name
             FROM top500_tables
             ORDER BY split ASC, table_name ASC
@@ -704,7 +710,7 @@ def build_final_db(full_conn: sqlite3.Connection,
         for split, table_name in tables:
             alias = aliases[split]
 
-            header_json = full_conn.execute(
+            header_json = intermediate_conn.execute(
                 "SELECT header_json FROM top500_tables WHERE table_name = ?",
                 (table_name,)
             ).fetchone()[0]
@@ -875,10 +881,10 @@ def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
         conn.close()
 
 
-def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
+def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool = False) -> Dict[str, Any]:
     """
     End-to-end pipeline:
-      1) Create full DB (metadata only).
+      1) Create intermediate DB (metadata only).
       2) Populate metadata (tables, questions, op_map).
       3) Create scoring views (pure-SQL features).
       4) Compute ambiguity counts (where_match_count) by executing COUNT(*) against source DBs.
@@ -887,11 +893,11 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
     """
     split_files = validate_split_files(extracted_root)
 
-    # e.g., wikisql-top500.sqlite -> wikisql-full.sqlite
-    full_db = out_db.with_name("wikisql-full.sqlite")
-    if full_db.exists():
-        full_db.unlink()
-    conn = setup_full_db(full_db)
+    # e.g., wikisql-top500.sqlite -> wikisql-intermediate.sqlite
+    intermediate_db = out_db.with_name("wikisql-intermediate.sqlite")
+    if intermediate_db.exists():
+        intermediate_db.unlink()
+    conn = setup_intermediate_db(intermediate_db)
 
     try:
         op_map = build_operator_mapping(conn, split_files)
@@ -918,11 +924,15 @@ def build_top500(extracted_root: Path, out_db: Path) -> Dict[str, Any]:
             "where_match_counts_computed": n_amb,
             "validation": validation_results,
             "top500_distribution": distribution,
-            "full_db": str(full_db),
+            "intermediate_db": str(intermediate_db),
             "final_db": str(out_db),
         }
     finally:
         conn.close()
+        # Delete the intermediate database unless explicitly requested to keep it
+        if not keep_intermediate_db and intermediate_db.exists():
+            intermediate_db.unlink()
+            eprint(f"Deleted intermediate database: {intermediate_db}")
 
 
 def main():
@@ -933,6 +943,8 @@ def main():
                         help=f"Output SQLite DB path. Default: {DEFAULT_OUT}")
     parser.add_argument("--validate-only", action="store_true",
                         help="Only run validation on existing database (skip build process)")
+    parser.add_argument("--keep-intermediate", action="store_true",
+                        help="Keep the intermediate database file after completion")
     args = parser.parse_args()
 
     out_db = Path(args.out).resolve()
@@ -972,7 +984,7 @@ def main():
         eprint(f"Extracting archive to: {workdir}")
         extract_tar_bz2(archive_path, workdir)
 
-        summary = build_top500(extracted_root=workdir, out_db=out_db)
+        summary = build_top500(extracted_root=workdir, out_db=out_db, keep_intermediate_db=args.keep_intermediate)
 
     if "validation_only" in summary and summary["validation_only"]:
         eprint(f"[summary] Database: {summary['database_path']}")
