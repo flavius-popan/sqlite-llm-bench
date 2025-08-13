@@ -967,7 +967,7 @@ def compute_top500_distribution(db_path: Path) -> Dict[str, Any]:
         conn.close()
 
 
-def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool = False) -> Dict[str, Any]:
+def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool = False, keep_source_data: bool = False, cleanup_info: Dict[str, Any] | None = None) -> Dict[str, Any]:
     """
     End-to-end pipeline:
       1) Create intermediate DB (metadata only).
@@ -976,6 +976,10 @@ def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool 
       4) Compute ambiguity counts (where_match_count) by executing COUNT(*) against source DBs.
       5) Rank deterministically and pick top 500.
       6) Build final DB with top-500 + referenced tables.
+
+    Args:
+        keep_source_data: If True, preserve extracted source data after processing (default: False to save disk space)
+        cleanup_info: Information about what can be safely cleaned up
     """
     split_files = validate_split_files(extracted_root)
 
@@ -1021,6 +1025,22 @@ def build_top500(extracted_root: Path, out_db: Path, keep_intermediate_db: bool 
             intermediate_db.unlink()
             eprint(f"Deleted intermediate database: {intermediate_db}")
 
+        # Clean up source data unless explicitly requested to keep it
+        if not keep_source_data and cleanup_info:
+            import shutil
+
+            # Clean up extracted data if we extracted it ourselves
+            if cleanup_info.get("extracted_by_us", False) and extracted_root.exists():
+                shutil.rmtree(extracted_root)
+                eprint(f"Deleted extracted source data: {extracted_root}")
+
+            # Clean up downloaded archive if we downloaded it
+            if cleanup_info.get("downloaded_by_us", False):
+                archive_path = cleanup_info.get("archive_path")
+                if archive_path and archive_path.exists():
+                    archive_path.unlink()
+                    eprint(f"Deleted downloaded archive: {archive_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Build a slim, deterministic WikiSQL top-500 difficulty DB.")
@@ -1032,6 +1052,8 @@ def main():
                         help="Only run validation on existing database (skip build process)")
     parser.add_argument("--keep-intermediate", action="store_true",
                         help="Keep the intermediate database file after completion")
+    parser.add_argument("--keep-source-data", action="store_true",
+                        help="Keep extracted source data after processing (default: delete to save disk space)")
     args = parser.parse_args()
 
     out_db = Path(args.out).resolve()
@@ -1052,6 +1074,11 @@ def main():
         }
     else:
         workdir = Path("data/raw/wikisql").resolve()
+        cleanup_info = {
+            "extracted_by_us": True,
+            "downloaded_by_us": False,
+            "archive_path": None
+        }
 
         # Obtain archive
         if is_url(args.src):
@@ -1063,15 +1090,18 @@ def main():
                 archive_bytes = download_to_bytes(args.src)
                 archive_path.write_bytes(archive_bytes)
                 eprint(f"Downloaded archive to: {archive_path}")
+                cleanup_info["downloaded_by_us"] = True
+                cleanup_info["archive_path"] = archive_path
         else:
             archive_path = Path(args.src).expanduser().resolve()
             if not archive_path.exists():
                 raise FileNotFoundError(f"--src path not found: {archive_path}")
+            # Don't clean up user-provided archive paths
 
         eprint(f"Extracting archive to: {workdir}")
         extract_tar_bz2(archive_path, workdir)
 
-        summary = build_top500(extracted_root=workdir, out_db=out_db, keep_intermediate_db=args.keep_intermediate)
+        summary = build_top500(extracted_root=workdir, out_db=out_db, keep_intermediate_db=args.keep_intermediate, keep_source_data=args.keep_source_data, cleanup_info=cleanup_info)
 
     if "validation_only" in summary and summary["validation_only"]:
         eprint(f"[summary] Database: {summary['database_path']}")
