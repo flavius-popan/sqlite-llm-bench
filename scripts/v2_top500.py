@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
 """
-WikiSQL Top-K Question Selection Script
+Build a compact, high-signal SQLite database derived from the WikiSQL dataset.
 
-This script processes the WikiSQL dataset to select the top K most difficult questions
-based on a weighted difficulty scoring system. It downloads the WikiSQL data,
-validates questions against their corresponding databases, computes difficulty metrics,
-and creates a consolidated SQLite database with the selected questions and tables.
+This script:
+  1) Downloads & extracts WikiSQL if needed (JSONL + split SQLite DBs).
+  2) Reads table metadata (tables.jsonl) and questions (train/dev/test jsonl).
+  3) Validates each question by executing its SQL against the relevant split DB.
+  4) Estimates simple table/column stats needed for scoring and filtering.
+  5) Ranks questions via a lightweight "difficulty" score and keeps top-K.
+  6) Writes a single output SQLite DB with:
+       - questions: scored top-K questions + features
+       - wikisql_tables: table metadata + cleaned column names
+       - a view (v_top500_questions) for quick human inspection
+       - a copy of each referenced source table with human-readable column names
 
-The difficulty score considers:
-- Condition complexity (number and rarity of operators)
-- Aggregation usage and rarity
-- Table dimensions (rows/columns)
-- Question word count
-
-Author: SQLite-LLM-Bench Project
-Version: 2
+Notes on design:
+- WikiSQL split DBs name tables as "table_<table_id>" with columns "col0", "col1", ...
+  We keep those IDs but generate sanitized, stable, *human* column names derived
+  from the original headers (e.g., "players", "total_points", ...). This makes the
+  final DB much easier to read and to demo.
+- Validation executes the *original* (colN-based) queries to avoid mismatches;
+  humanized SQL is stored for display only.
+- Scoring intentionally favors queries with more conditions / rarer operators /
+  aggregations, while lightly accounting for table size and question length.
 """
 
 import argparse
@@ -36,109 +44,81 @@ DATASET_VERSION = 1
 
 DATA_URL = "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2"
 
-# Aggregation function mappings from WikiSQL integer codes
+# WikiSQL integer code mappings
 AGG_MAP = {
-    0: None,     # No aggregation
-    1: "MAX",    # Maximum value
-    2: "MIN",    # Minimum value
-    3: "COUNT",  # Count rows
-    4: "SUM",    # Sum values
-    5: "AVG",    # Average value
+    0: None,
+    1: "MAX",
+    2: "MIN",
+    3: "COUNT",
+    4: "SUM",
+    5: "AVG",
 }
 
-# SQL operator mappings from WikiSQL integer codes
 OP_MAP = {
-    0: "=",      # Equal
-    1: ">",      # Greater than
-    2: "<",      # Less than
-    3: ">=",     # Greater than or equal
-    4: "<=",     # Less than or equal
-    5: "!=",     # Not equal
+    0: "=",
+    1: ">",
+    2: "<",
+    3: ">=",
+    4: "<=",
+    5: "!=",
 }
 
-# Difficulty scoring weights for different question attributes
+# Difficulty scoring weights - tuned for question complexity
 WEIGHTS = {
-    "cond_count": 1.5,      # Number of WHERE conditions
-    "op_rarity_sum": 0.9,   # Rarity of operators used
-    "has_agg": 0.8,         # Whether aggregation is used
-    "agg_rarity": 0.7,      # Rarity of aggregation function
-    "n_rows": 0.001,        # Table size (rows)
-    "n_cols": 0.25,         # Table width (columns)
-    "q_words": 0.05,        # Question length in words
+    "cond_count": 1.5,
+    "op_rarity_sum": 0.9,
+    "has_agg": 0.8,
+    "agg_rarity": 0.7,
+    "n_rows": 0.001,
+    "n_cols": 0.25,
+    "q_words": 0.05,
 }
 
-# Default configuration values
 DEFAULT_DATA_DIR = "data/raw/wikisql"
 DEFAULT_OUT = f"data/processed/wikisql/wikisql-top500-v{DATASET_VERSION}.db"
 DEFAULT_K = 500
 DEFAULT_PROCESSES = 3
 
 def _create_task_dict():
-    """Create a new task dictionary for tracking column usage and questions per table."""
     return {"col_idxs": set(), "questions": []}
 
 def _json_array_length(s):
-    """SQLite function to calculate the length of a JSON array string."""
     return len(json.loads(s)) if s else 0
 
 def derived_table_name(table_id: str) -> str:
-    """Convert WikiSQL table ID to a valid SQLite table name by replacing hyphens with underscores."""
     return "table_" + table_id.replace("-", "_")
 
-
-
 def ensure_wikisql_data(data_dir: Path) -> None:
-    """
-    Download and extract WikiSQL dataset if not already present.
-
-    Args:
-        data_dir: Directory where WikiSQL data should be stored
-
-    The function checks for required files and downloads/extracts the dataset
-    if any files are missing. Cleans up the archive after extraction.
-    """
-    print(f"Ensuring WikiSQL data is available in {data_dir}")
-
-    # Check if all required files exist
+    """Download and extract WikiSQL dataset if not already present."""
     expected = ["train.jsonl", "dev.jsonl", "test.jsonl",
                 "tables.jsonl", "train.db", "dev.db", "test.db"]
 
     if all((data_dir / f).exists() for f in expected):
-        print("All required WikiSQL files found")
         return
 
-    print("Missing WikiSQL files, downloading and extracting...")
+    print("Downloading WikiSQL dataset...")
     data_dir.mkdir(parents=True, exist_ok=True)
     archive = data_dir / "data.tar.bz2"
 
     if not archive.exists():
-        print(f"Downloading WikiSQL dataset from {DATA_URL}")
         import urllib.request
         urllib.request.urlretrieve(DATA_URL, archive)
 
-    print("Extracting WikiSQL archive...")
     with bz2.BZ2File(archive, "rb") as f_in:
         with tarfile.open(fileobj=io.BytesIO(f_in.read())) as tf:
             tf.extractall(data_dir, filter='data')
 
     if archive.exists():
-        print("Cleaning up archive file")
         archive.unlink()
 
 def sanitize_identifier(name: str) -> str:
     """
-    Convert a column name to a valid SQL identifier.
+    Convert column name to valid SQL identifier.
 
-    Args:
-        name: Original column name from WikiSQL
-
-    Returns:
-        Sanitized column name safe for use as SQL identifier
-
-    Handles special cases like 4-digit years and ensures valid SQL naming conventions.
+    Preserves 4-digit years with yr_ prefix to maintain semantic meaning.
     """
     original_name = name.strip()
-    # Special case: preserve 4-digit years with yr_ prefix
+    # Preserve years as special case
     if re.match(r'^\d{4}$', original_name):
         return 'yr_' + original_name
 
@@ -165,17 +145,7 @@ def sanitize_identifier(name: str) -> str:
     return s
 
 def unique_names(names: List[str]) -> List[str]:
-    """
-    Ensure all column names are unique by appending numeric suffixes as needed.
-
-    Args:
-        names: List of potentially duplicate column names
-
-    Returns:
-        List of unique column names with numeric suffixes where needed
-
-    This prevents SQL table creation errors from duplicate column names.
-    """
+    """Ensure column names are unique by appending numeric suffixes."""
     seen = {}
     out = []
     for n in names:
@@ -185,7 +155,6 @@ def unique_names(names: List[str]) -> List[str]:
             out.append(base)
             seen[base] = 1
         else:
-            # Generate unique name with numeric suffix
             i = seen[base]
             candidate = f"{base}_{i}"
             while candidate in seen:
@@ -197,19 +166,7 @@ def unique_names(names: List[str]) -> List[str]:
     return out
 
 def build_sql_text(table: str, headers: List[str], agg: int, sel: int, conds: List[List]):
-    """
-    Generate SQL query text from WikiSQL question components.
-
-    Args:
-        table: Table ID
-        headers: Column headers from the table
-        agg: Aggregation function code (0=none, 1=MAX, 2=MIN, 3=COUNT, 4=SUM, 5=AVG)
-        sel: Selected column index
-        conds: List of conditions [column_idx, operator_idx, value]
-
-    Returns:
-        Tuple of (sql_query_string, sanitized_column_names)
-    """
+    """Generate SQL query from WikiSQL components."""
     proper = unique_names([sanitize_identifier(h) for h in headers])
     sel_name = proper[sel]
     agg_kw = AGG_MAP.get(agg)
@@ -220,8 +177,8 @@ def build_sql_text(table: str, headers: List[str], agg: int, sel: int, conds: Li
         col_name = proper[col_idx]
         if isinstance(val, (int, float)):
             val_sql = str(val)
-        else:  # Other aggregations - check if result is not null
-            # Escape single quotes in string values
+        else:
+            # Escape single quotes for string values
             val_sql = "'" + str(val).replace("'", "''") + "'"
         cond_parts.append(f'"{col_name}" {op} {val_sql}')
     where = (" WHERE " + " AND ".join(cond_parts)) if cond_parts else ""
@@ -229,12 +186,10 @@ def build_sql_text(table: str, headers: List[str], agg: int, sel: int, conds: Li
     return f'SELECT {select_expr} FROM "{table_name}"{where};', proper
 
 def count_words(s: str) -> int:
-    """Count the number of words in a string, splitting on whitespace."""
     return len([w for w in re.split(r"\s+", s.strip()) if w])
 
 @dataclass
 class TableMeta:
-    """Metadata for a WikiSQL table including schema and context information."""
     table_id: str
     header: List[str]
     types: List[str]
@@ -244,25 +199,12 @@ class TableMeta:
     page_id: int
 
 def read_tables_jsonl(data_dir: Path) -> Dict[str, TableMeta]:
-    """
-    Load table metadata from WikiSQL JSONL files.
-
-    Args:
-        data_dir: Directory containing WikiSQL data
-
-    Returns:
-        Dictionary mapping table_id to TableMeta objects
-
-    Reads from train.tables.jsonl, dev.tables.jsonl, and test.tables.jsonl
-    and deduplicates tables that appear in multiple splits.
-    """
-    print("Loading table metadata from JSONL files...")
+    """Load table metadata from WikiSQL JSONL files."""
     meta = {}
     extracted_dir = data_dir / "data"
     for split in ["train", "dev", "test"]:
         table_file = extracted_dir / f"{split}.tables.jsonl"
         if table_file.exists():
-            print(f"Reading {split} table metadata...")
             with table_file.open("r", encoding="utf-8") as f:
                 for line in f:
                     obj = json.loads(line)
@@ -276,21 +218,10 @@ def read_tables_jsonl(data_dir: Path) -> Dict[str, TableMeta]:
                             caption=obj.get("caption", ""),
                             page_id=int(obj.get("page_id", -1)),
                         )
-    print(f"Loaded metadata for {len(meta)} unique tables")
     return meta
 
 def read_split_jsonl(data_dir: Path, split: str) -> List[dict]:
-    """
-    Load questions from a specific WikiSQL split.
-
-    Args:
-        data_dir: Directory containing WikiSQL data
-        split: Split name ("train", "dev", or "test")
-
-    Returns:
-        List of question dictionaries with normalized structure
-    """
-    print(f"Loading {split} questions...")
+    """Load questions from a WikiSQL split."""
     extracted_dir = data_dir / "data"
     p = extracted_dir / f"{split}.jsonl"
     out = []
@@ -306,15 +237,10 @@ def read_split_jsonl(data_dir: Path, split: str) -> List[dict]:
                 "sel": int(j["sql"]["sel"]),
                 "conds": [[int(c[0]), int(c[1]), c[2]] for c in j["sql"]["conds"]],
             })
-    print(f"Loaded {len(out)} questions from {split}")
     return out
 
 def _mk_where_and_params(conds: List[List]) -> Tuple[str, List]:
-    """
-    Generate WHERE clause and parameters for SQL validation queries.
-
-    Uses parameterized queries to safely handle different value types.
-    """
+    """Generate parameterized WHERE clause for safe SQL execution."""
     if not conds:
         return "", []
     parts, params = [], []
@@ -326,28 +252,18 @@ def _mk_where_and_params(conds: List[List]) -> Tuple[str, List]:
 
 def _validate_question(cur: sqlite3.Cursor, table: str, agg: int, sel: int, conds: List[List]) -> bool:
     """
-    Validate that a question can be executed against its table and returns meaningful results.
+    Validate question executability and meaningful results.
 
-    Args:
-        cur: Database cursor for the split containing the table
-        table: Table ID
-        agg: Aggregation function code
-        sel: Selected column index
-        conds: List of WHERE conditions
-
-    Returns:
-        True if question is valid (returns non-empty, non-null results)
-
-    Handles different validation logic for different aggregation types.
+    Different validation logic for aggregations to ensure non-empty results.
     """
     where_sql, params = _mk_where_and_params(conds)
     table_name = derived_table_name(table)
-    if agg == 0:  # No aggregation - check for non-null values in selected column
+    if agg == 0:  # No aggregation - need non-null values
         q = f'SELECT COUNT(*) FROM "{table_name}"{where_sql} AND "col{sel}" IS NOT NULL' if where_sql else \
             f'SELECT COUNT(*) FROM "{table_name}" WHERE "col{sel}" IS NOT NULL'
         cur.execute(q, params)
         return cur.fetchone()[0] > 0
-    if agg == 3:  # COUNT aggregation - just check if any rows match conditions
+    if agg == 3:  # COUNT - just need matching rows
         q = f'SELECT COUNT(*) FROM "{table_name}"{where_sql}'
         cur.execute(q, params)
         return cur.fetchone()[0] > 0
@@ -359,24 +275,15 @@ def _validate_question(cur: sqlite3.Cursor, table: str, agg: int, sel: int, cond
 
 def _compute_table_stats(cur: sqlite3.Cursor, table: str, col_idxs: Iterable[int]) -> dict:
     """
-    Compute statistics for a table and its referenced columns.
+    Compute table statistics for selectivity estimation.
 
-    Args:
-        cur: Database cursor
-        table: Table ID
-        col_idxs: Column indices that are referenced by questions
-
-    Returns:
-        Dictionary containing table row count and per-column statistics
-
-    Statistics include non-null counts and distinct value counts for selectivity estimation.
+    Non-null and distinct counts enable cardinality estimation.
     """
     stats = {}
     table_name = derived_table_name(table)
     cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
     n_rows = int(cur.fetchone()[0])
     stats["n_rows"] = n_rows
-    # Compute column statistics for selectivity estimation
     for i in sorted(set(col_idxs)):
         cur.execute(f'SELECT COUNT("col{i}") FROM "{table_name}"')
         nn = int(cur.fetchone()[0])
@@ -387,95 +294,55 @@ def _compute_table_stats(cur: sqlite3.Cursor, table: str, col_idxs: Iterable[int
     return stats
 
 def worker_validate_and_stats(args):
-    """
-    Worker function for parallel validation and statistics computation.
-
-    Args:
-        args: Tuple of (split_name, db_path, tasks_dict)
-
-    Returns:
-        Tuple of (validation_results, table_statistics)
-
-    This function runs in a separate process to validate questions and compute
-    table statistics for one split of the dataset.
-    """
+    """Worker for parallel validation and statistics computation."""
     split, db_path, tasks = args
-    print(f"Worker starting validation for {split} split...")
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     out_valid = {}
     out_stats = {}
 
-    tables_processed = 0
     for table, bundle in tasks.items():
         col_idxs = bundle["col_idxs"]
         out_stats[(split, table)] = _compute_table_stats(cur, table, col_idxs)
         for q in bundle["questions"]:
             ok = _validate_question(cur, table, q["agg"], q["sel"], q["conds"])
             out_valid[q["uid"]] = ok
-        tables_processed += 1
-        if tables_processed % 100 == 0:
-            print(f"  {split}: Processed {tables_processed} tables")
 
     conn.close()
-    print(f"Worker completed {split} split: {len(out_valid)} questions validated")
     return out_valid, out_stats
 
 def estimate_expected_rows(n_rows: int,
                            conds: List[List],
                            per_col_stats: Dict[int, Tuple[int, int]]) -> float:
     """
-    Estimate the number of rows a query will return based on table statistics.
+    Estimate query result size using simple selectivity model.
 
-    Args:
-        n_rows: Total number of rows in the table
-        conds: List of WHERE conditions
-        per_col_stats: Dictionary mapping column_idx to (non_null_count, distinct_count)
-
-    Returns:
-        Estimated number of rows the query will return
-
-    Uses simple selectivity estimation assuming independence between conditions.
-    Different operators have different estimated selectivity.
+    Assumes independence between conditions for tractability.
     """
     if n_rows <= 0:
         return 0.0
     if not conds:
         return float(n_rows)
 
-    # Multiply selectivity of all conditions (independence assumption)
     p = 1.0
     for col_idx, op_idx, _ in conds:
         nn, nd = per_col_stats.get(col_idx, (n_rows, max(1, n_rows)))
         nonnull_frac = nn / max(n_rows, 1)
         if OP_MAP[op_idx] == "=":
-            # Equality: 1/distinct_values of non-null rows
+            # Uniform distribution assumption
             frac = nonnull_frac * (1.0 / max(nd, 1))
         elif OP_MAP[op_idx] == "!=":
-            # Inequality: (distinct-1)/distinct of non-null rows
             frac = nonnull_frac * (1.0 - 1.0 / max(nd, 1))
         else:
-            # Range operators: assume 1/3 selectivity of non-null rows
+            # Range predicates: empirical 1/3 selectivity
             frac = nonnull_frac * 0.33
         p *= max(min(frac, 1.0), 0.0)
-    # Ensure result is within reasonable bounds
     p = min(max(p, 1.0 / max(n_rows, 1)), 1.0)
     return p * n_rows
 
 def main():
-    """
-    Main function that orchestrates the entire WikiSQL top-K selection process.
-
-    Process overview:
-    1. Download and extract WikiSQL data
-    2. Load table metadata and questions from all splits
-    3. Validate questions in parallel across splits
-    4. Compute difficulty scores based on multiple factors
-    5. Select top-K most difficult questions
-    6. Create consolidated database with selected questions and tables
-    """
-    print("Starting WikiSQL Top-K Question Selection")
+    """Orchestrate WikiSQL top-K selection process."""
     ap = argparse.ArgumentParser(description="Build a top-K WikiSQL SQLite DB (no boost).")
     ap.add_argument("--data-dir", type=Path, default=Path(DEFAULT_DATA_DIR),
                     help=f"Directory containing WikiSQL data (jsonl and split .db files). Default: {DEFAULT_DATA_DIR}")
@@ -489,13 +356,6 @@ def main():
                     help="Preserve extracted source data after processing (default: False to save disk space)")
     args = ap.parse_args()
 
-    print("Configuration:")
-    print(f"  Data directory: {args.data_dir}")
-    print(f"  Output database: {args.out}")
-    print(f"  Top K questions: {args.k}")
-    print(f"  Parallel processes: {args.processes}")
-    print(f"  Keep source data: {args.keep_source_data}")
-
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     ensure_wikisql_data(args.data_dir)
@@ -507,10 +367,8 @@ def main():
         "test":  read_split_jsonl(args.data_dir, "test"),
     }
 
-    print("Organizing questions by table and split for parallel processing...")
     uid = 0
     all_questions = []
-    # Group questions by split and table for efficient batch processing
     per_split_tasks: Dict[str, Dict[str, Dict[str, Any]]] = {
         "train": defaultdict(_create_task_dict),
         "dev":   defaultdict(_create_task_dict),
@@ -519,46 +377,36 @@ def main():
 
     total_questions = 0
     for split, rows in splits.items():
-        print(f"Processing {len(rows)} questions from {split} split...")
         for q in rows:
             t = q["table_id"]
             q["uid"] = uid
             uid += 1
-            # Track which columns are used for table statistics computation
             cols = [c[0] for c in q["conds"]] + [q["sel"]]
             per_split_tasks[split][t]["col_idxs"].update(cols)
             per_split_tasks[split][t]["questions"].append(q)
             all_questions.append(q)
             total_questions += 1
 
-    print(f"Total questions loaded: {total_questions}")
-    print("Starting parallel validation and statistics computation...")
+    print(f"Processing {total_questions} questions...")
 
-    # Prepare jobs for parallel processing - one per split
     jobs = []
     extracted_dir = args.data_dir / "data"
     for split in ["train", "dev", "test"]:
         db_path = extracted_dir / f"{split}.db"
         if len(per_split_tasks[split]) == 0:
             continue
-        print(f"Preparing job for {split}: {len(per_split_tasks[split])} tables")
         jobs.append((split, str(db_path), per_split_tasks[split]))
 
-    # Run validation and statistics computation in parallel
     valid_map = {}
     table_stats = {}
     with cf.ProcessPoolExecutor(max_workers=args.processes) as ex:
-        print(f"Executing {len(jobs)} parallel validation jobs...")
         for ok_map, stats in ex.map(worker_validate_and_stats, jobs):
             valid_map.update(ok_map)
             table_stats.update(stats)
 
-    print(f"Validation complete: {len(valid_map)} questions processed")
     valid_count = sum(1 for v in valid_map.values() if v)
     print(f"Valid questions: {valid_count}/{len(valid_map)} ({100*valid_count/len(valid_map):.1f}%)")
-
-    print("Setting up in-memory database for difficulty scoring...")
-    # Use in-memory database for fast computation of difficulty metrics
+    # In-memory for speed
     mem = sqlite3.connect(":memory:")
     mem.execute("PRAGMA journal_mode = MEMORY;")
     mem.execute("PRAGMA synchronous = OFF;")
@@ -598,14 +446,12 @@ def main():
     );
     """)
 
-    print("Computing question features and loading into temporary database...")
     q_batch = []
     for q in all_questions:
         tm = tables_meta[q["table_id"]]
         sql_text, proper_cols = build_sql_text(tm.table_id, tm.header, q["agg"], q["sel"], q["conds"])
         stats = table_stats.get((q["split"], q["table_id"]), {"n_rows": 0})
         n_rows = stats.get("n_rows", 0)
-        # Prepare per-column statistics for row estimation
         per_col = {}
         for cidx in set([c[0] for c in q["conds"]]):
             nn = stats.get(f"col{cidx}_nonnull", n_rows)
@@ -624,7 +470,6 @@ def main():
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, q_batch)
 
-    print("Loading table metadata into temporary database...")
     t_batch = []
     for split in ["train", "dev", "test"]:
         for t_id, tm in tables_meta.items():
@@ -641,8 +486,6 @@ def main():
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, t_batch)
 
-    print("Computing operator and aggregation rarity statistics...")
-    # Compute global statistics for rarity-based scoring
     mem.executescript("""
     CREATE TEMP TABLE op_stats AS
     SELECT json_extract(j.value,'$[1]') AS op_idx, COUNT(*) AS cnt
@@ -655,8 +498,6 @@ def main():
     GROUP BY agg;
     """)
 
-    print("Computing difficulty scores using weighted feature combination...")
-    # Create the main scoring query using the defined weights
     mem.executescript(f"""
     CREATE TEMP VIEW v_totals AS
     SELECT
@@ -714,14 +555,9 @@ def main():
     LIMIT {int(args.k)};
     """)
 
-    print(f"Selecting top {args.k} most difficult questions...")
-    total_candidates = mem.execute("SELECT COUNT(*) FROM top_questions").fetchone()[0]
-    print(f"Found {total_candidates} valid questions for ranking")
-
-    print("Creating output database and schema...")
+    print(f"Selecting top {args.k} from {mem.execute('SELECT COUNT(*) FROM top_questions').fetchone()[0]} candidates...")
     out = args.out
     if out.exists():
-        print(f"Removing existing output file: {out}")
         out.unlink()
     dst = sqlite3.connect(out)
     dst.execute("PRAGMA journal_mode = WAL;")
@@ -765,7 +601,6 @@ def main():
     );
     """)
 
-    print("Copying selected questions to output database...")
     rows = mem.execute("""
         SELECT uid, split, table_id, 'table_' || REPLACE(table_id, '-', '_') as table_name,
                question, agg, sel, conds_json,
@@ -780,9 +615,6 @@ def main():
          cond_count, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
-    print(f"Inserted {len(rows)} questions into output database")
-
-    print("Copying table metadata to output database...")
     meta_rows = mem.execute("""
         SELECT DISTINCT t.split, t.table_id, t.header_json, t.types_json, t.clean_colnames_json,
                         t.page_title, t.section_title, t.caption, t.page_id, t.n_rows, t.n_cols
@@ -795,9 +627,6 @@ def main():
          page_title, section_title, caption, page_id, n_rows, n_cols)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, meta_rows)
-    print(f"Inserted metadata for {len(meta_rows)} tables")
-
-    print("Copying actual table data with cleaned column names...")
     used = {(r[0], r[1]) for r in meta_rows}
     extracted_dir = args.data_dir / "data"
     for split in ["train", "dev", "test"]:
@@ -805,8 +634,6 @@ def main():
 
     tables_copied = 0
     for split, table_id in sorted(used):
-        if tables_copied % 50 == 0:
-            print(f"  Copied {tables_copied}/{len(used)} tables...")
         clean_cols = json.loads(dst.execute("""
             SELECT clean_colnames_json FROM wikisql_tables
             WHERE split=? AND table_id=?""", (split, table_id)).fetchone()[0])
@@ -835,10 +662,9 @@ def main():
     dst.close()
     mem.close()
 
-    print(f"Output database created successfully: {args.out}")
+    print(f"Output database created: {args.out}")
 
     if not args.keep_source_data:
-        print("Cleaning up temporary source data...")
         extracted_data_dir = args.data_dir / "data"
         if extracted_data_dir.exists():
             shutil.rmtree(extracted_data_dir)
