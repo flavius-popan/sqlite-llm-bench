@@ -1,1 +1,3 @@
+lighteval
+litellm
 requests
