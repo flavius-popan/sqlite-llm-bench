@@ -28,6 +28,7 @@ Notes on design:
 import argparse
 import bz2
 import concurrent.futures as cf
+import hashlib
 import io
 import json
 import re
@@ -36,6 +37,7 @@ import string
 import tarfile
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple, Any
 import shutil
@@ -75,7 +77,7 @@ WEIGHTS = {
 }
 
 DEFAULT_DATA_DIR = "data/raw/wikisql"
-DEFAULT_OUT = f"data/processed/wikisql/wikisql-top500-v{DATASET_VERSION}.db"
+DEFAULT_OUT = "datasets/wikisql/wikisql-top500.db"
 DEFAULT_K = 500
 DEFAULT_PROCESSES = 3
 
@@ -428,6 +430,19 @@ def create_output_database(args, mem):
     dst.execute("PRAGMA synchronous = NORMAL;")
 
     dst.executescript("""
+    CREATE TABLE dataset_metadata (
+        dataset_name TEXT NOT NULL,
+        variant TEXT NOT NULL,
+        version TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        schema_version INTEGER NOT NULL,
+        description TEXT,
+        checksum TEXT,
+        parent_version TEXT,
+        breaking_changes BOOLEAN DEFAULT FALSE,
+        PRIMARY KEY (dataset_name, variant, version)
+    );
+
     CREATE TABLE questions(
       uid INTEGER PRIMARY KEY,
       split TEXT NOT NULL,
@@ -512,6 +527,77 @@ def copy_tables_to_output(dst, meta_rows, args):
         dst.execute(f'CREATE TABLE "{derived_name}" AS SELECT {select_list} FROM {split}_db."{derived_name}"')
         tables_copied += 1
 
+def compute_database_checksum(db_path: Path) -> str:
+    """Compute SHA256 checksum of database content (excluding metadata table)."""
+    sha256_hash = hashlib.sha256()
+
+    with sqlite3.connect(db_path) as conn:
+        # Get all tables except dataset_metadata for content hashing
+        cursor = conn.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name != 'dataset_metadata'
+            ORDER BY name
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+
+        # Hash table schemas and data
+        for table_name in tables:
+            # Hash table schema
+            cursor = conn.execute(f"SELECT sql FROM sqlite_master WHERE name = ?", (table_name,))
+            schema = cursor.fetchone()[0]
+            sha256_hash.update(schema.encode('utf-8'))
+
+            # Hash table data (sorted for consistency)
+            try:
+                cursor = conn.execute(f"SELECT * FROM {table_name} ORDER BY 1")
+                for row in cursor.fetchall():
+                    row_str = '|'.join(str(x) if x is not None else 'NULL' for x in row)
+                    sha256_hash.update(row_str.encode('utf-8'))
+            except sqlite3.OperationalError:
+                # Skip tables that can't be ordered
+                cursor = conn.execute(f"SELECT * FROM {table_name}")
+                for row in cursor.fetchall():
+                    row_str = '|'.join(str(x) if x is not None else 'NULL' for x in row)
+                    sha256_hash.update(row_str.encode('utf-8'))
+
+    return sha256_hash.hexdigest()
+
+
+def archive_existing_version(db_path: Path, new_version: str) -> None:
+    """Archive existing database version before creating new one."""
+    if not db_path.exists():
+        return
+
+    print(f"📦 Archiving existing database before creating v{new_version}")
+
+    # Create versions directory
+    versions_dir = db_path.parent / "versions"
+    versions_dir.mkdir(exist_ok=True)
+
+    # Try to get current version from metadata
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.execute("SELECT version FROM dataset_metadata LIMIT 1")
+            row = cursor.fetchone()
+            current_version = row[0] if row else "unknown"
+    except sqlite3.OperationalError:
+        # No metadata table - assume legacy
+        current_version = "legacy"
+
+    # Create archive filename
+    dataset_name = "wikisql"
+    variant = "top500"
+    archive_name = f"{dataset_name}-{variant}-v{current_version}.db"
+    archive_path = versions_dir / archive_name
+
+    # Archive if not already archived
+    if not archive_path.exists():
+        shutil.copy2(db_path, archive_path)
+        print(f"✅ Archived v{current_version} to {archive_path}")
+    else:
+        print(f"ℹ️  Version v{current_version} already archived")
+
+
 def main():
     """Orchestrate WikiSQL top-K selection process."""
     ap = argparse.ArgumentParser(description="Build a top-K WikiSQL SQLite DB")
@@ -525,9 +611,17 @@ def main():
                     help=f"Number of processes for split-parallel validation. Default: {DEFAULT_PROCESSES}")
     ap.add_argument("--keep-source-data", action="store_true",
                     help="Preserve extracted source data after processing (default: False to save disk space)")
+    ap.add_argument("--version", type=str, default=f"{DATASET_VERSION}.0.0",
+                    help=f"Dataset version (semantic). Default: {DATASET_VERSION}.0.0")
+    ap.add_argument("--archive-existing", action="store_true",
+                    help="Archive existing database before creating new version")
     args = ap.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    # Handle version archiving if requested
+    if args.archive_existing and args.out.exists():
+        archive_existing_version(args.out, args.version)
 
     ensure_wikisql_data(args.data_dir)
 
@@ -687,7 +781,26 @@ def main():
     dst.close()
     mem.close()
 
+    # Compute content checksum (excluding metadata table)
+    checksum = compute_database_checksum(args.out)
+
+    # Add final metadata with correct checksum
+    with sqlite3.connect(args.out) as conn:
+        conn.execute("""
+            INSERT INTO dataset_metadata
+            (dataset_name, variant, version, created_at, schema_version,
+             description, checksum, parent_version, breaking_changes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "wikisql", "top500", args.version,
+            datetime.now().isoformat(), 1,
+            f"WikiSQL Top-{args.k} dataset with difficulty-ranked questions",
+            checksum, None, False
+        ))
+        conn.commit()
+
     print(f"Output database created: {args.out}")
+    print(f"Dataset version: {args.version}")
 
     if not args.keep_source_data:
         extracted_data_dir = args.data_dir / "data"

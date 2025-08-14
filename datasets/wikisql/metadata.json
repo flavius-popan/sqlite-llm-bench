@@ -1,0 +1,27 @@
+{
+  "dataset_name": "wikisql",
+  "display_name": "WikiSQL Top-500",
+  "description": "A curated subset of 500 high-complexity WikiSQL questions with single-table SQL queries",
+  "homepage": "https://github.com/salesforce/WikiSQL",
+  "license": "MIT",
+  "citation": "@misc{zhong2017seq2sql, title={Seq2SQL: Generating Structured Queries from Natural Language using Reinforcement Learning}, author={Victor Zhong and Caiming Xiong and Richard Socher}, year={2017}, eprint={1709.00103}, archivePrefix={arXiv}}",
+  "variants": {
+    "top500": {
+      "description": "Top 500 most complex questions ranked by difficulty score",
+      "default_version": "1.0.0",
+      "tool_required": true,
+      "evaluation_method": "execution_match",
+      "schema_type": "single_database"
+    }
+  },
+  "schema_version": 1,
+  "compatibility": {
+    "min_schema_version": 1,
+    "breaking_changes_in": []
+  },
+  "build_script": "datasets/scripts/build_wikisql_top500.py",
+  "source_data": {
+    "url": "https://raw.githubusercontent.com/salesforce/WikiSQL/master/data.tar.bz2",
+    "type": "wikisql_raw"
+  }
+}

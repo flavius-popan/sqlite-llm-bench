@@ -214,3 +214,6 @@ __marimo__/
 *.tar.bz2
 *.parquet
 .DS_Store
+
+# TODO: Remove this when you're ready to ship finished dbs
+*.db

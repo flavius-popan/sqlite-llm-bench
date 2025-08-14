@@ -15,7 +15,7 @@ def run_build():
         temp_path = tmp.name
 
     result = subprocess.run([
-        sys.executable, "scripts/build_wikisql_top500.py", "--out", temp_path
+        sys.executable, "datasets/scripts/build_wikisql_top500.py", "--out", temp_path
     ], capture_output=True, cwd=Path(__file__).parent.parent)
 
     if result.returncode != 0:
