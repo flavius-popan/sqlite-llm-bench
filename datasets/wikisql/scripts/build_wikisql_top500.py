@@ -346,7 +346,7 @@ def process_questions_and_tables(all_questions, tables_meta, table_stats, valid_
     q_batch = []
     for q in all_questions:
         tm = tables_meta[q["table_id"]]
-        sql_text, proper_cols = build_sql_text(tm.table_id, tm.header, q["agg"], q["sel"], q["conds"])
+        gold_sql, proper_cols = build_sql_text(tm.table_id, tm.header, q["agg"], q["sel"], q["conds"])
         stats = table_stats.get((q["split"], q["table_id"]), {"n_rows": 0})
         n_rows = stats.get("n_rows", 0)
         per_col = {}
@@ -358,7 +358,7 @@ def process_questions_and_tables(all_questions, tables_meta, table_stats, valid_
         q_batch.append((
             q["uid"], q["split"], q["table_id"], q["question"], q["agg"], q["sel"],
             json.dumps(q["conds"]), int(valid_map.get(q["uid"], False)), count_words(q["question"]),
-            sql_text, json.dumps(proper_cols), float(exp_rows)
+            gold_sql, json.dumps(proper_cols), float(exp_rows)
         ))
 
     t_batch = []
@@ -394,7 +394,7 @@ def setup_in_memory_database():
         conds_json TEXT NOT NULL,
         is_valid INTEGER NOT NULL,
         q_words INTEGER NOT NULL,
-        sql_text TEXT NOT NULL,
+        gold_sql TEXT NOT NULL,
         clean_colnames_json TEXT NOT NULL,
         expected_rows REAL NOT NULL
     );
@@ -437,7 +437,7 @@ def create_output_database(args, mem):
       agg INTEGER NOT NULL,
       sel INTEGER NOT NULL,
       conds_json TEXT NOT NULL,
-      sql_text TEXT NOT NULL,
+      gold_sql TEXT NOT NULL,
       q_words INTEGER NOT NULL,
       n_rows INTEGER NOT NULL,
       n_cols INTEGER NOT NULL,
@@ -468,14 +468,14 @@ def create_output_database(args, mem):
     rows = mem.execute("""
         SELECT uid, split, table_id, 'table_' || REPLACE(table_id, '-', '_') as table_name,
                question, agg, sel, conds_json,
-               sql_text, q_words, n_rows, n_cols,
+               gold_sql, q_words, n_rows, n_cols,
                cond_count, op_rarity_sum, has_agg, agg_rarity,
                difficulty_score, expected_rows
         FROM topk
     """).fetchall()
     dst.executemany("""
         INSERT INTO questions
-        (uid, split, table_id, table_name, question, agg, sel, conds_json, sql_text, q_words, n_rows, n_cols,
+        (uid, split, table_id, table_name, question, agg, sel, conds_json, gold_sql, q_words, n_rows, n_cols,
          cond_count, op_rarity_sum, has_agg, agg_rarity, difficulty_score, expected_rows)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
@@ -584,7 +584,7 @@ def main():
 
     mem.executemany("""
         INSERT INTO questions_raw
-        (uid, split, table_id, question, agg, sel, conds_json, is_valid, q_words, sql_text, clean_colnames_json, expected_rows)
+        (uid, split, table_id, question, agg, sel, conds_json, is_valid, q_words, gold_sql, clean_colnames_json, expected_rows)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, q_batch)
 
@@ -638,7 +638,7 @@ def main():
     CREATE TABLE top_questions AS
     SELECT
       q.uid, q.split, q.table_id, q.question, q.agg, q.sel, q.conds_json,
-      q.sql_text, q.clean_colnames_json,
+      q.gold_sql, q.clean_colnames_json,
       t.header_json, t.types_json, t.page_title, t.section_title, t.caption, t.page_id,
       t.n_rows, t.n_cols, q.q_words, q.expected_rows,
       cc.cond_count, ors.op_rarity_sum, af.has_agg, af.agg_rarity,
@@ -671,7 +671,7 @@ def main():
         CREATE VIEW v_top500_questions AS
         SELECT
           q.question,
-          q.sql_text,
+          q.gold_sql,
           q.table_name,
           wt.n_rows,
           wt.page_title,
