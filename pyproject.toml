@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13.6"
 dependencies = [
-    "lighteval>=0.10.0",
     "litellm>=1.75.5.post1",
     "requests>=2.32.4",
+    "sqlglot>=27.7.0",
 ]

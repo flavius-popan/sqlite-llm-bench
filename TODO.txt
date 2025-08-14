@@ -1,0 +1,2 @@
+Rewrite wikisql to only use dev?
+Make deterministic build script work with all build scripts
