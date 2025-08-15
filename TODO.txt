@@ -1,2 +1,27 @@
 Rewrite wikisql to only use dev?
 Make deterministic build script work with all build scripts
+
+
+Project Purpose
+“SQLite Competency Map for Local LLMs”?
+"bench" -> "workbench" in name?
+"datasets" -> "benchpacks"?
+
+- [ ] Add PromptFoo Wrapper: https://www.promptfoo.dev/docs/guides/text-to-sql-evaluation/
+
+Skill Tiers?
+Skill coverage (keep it focused yet comprehensive)
+
+Tiered packs (each pack runs in minutes; users can chain packs):
+L0 Smoke: single-table selects, filters, simple aggregations, ORDER BY, LIMIT.
+L1 Joins: inner/left joins, key/foreign-key reasoning, aliasing.
+L2 Grouping: GROUP BY, HAVING, multi-agg, nested filters.
+L3 Subqueries/EXISTS: IN/EXISTS, scalar subqueries, correlated filters.
+L4 CTEs & Window: CTE chains; window functions subset supported by SQLite.
+L5 Traps: NULL semantics, LIKE/collation quirks, date/time parsing, type affinity, string vs numeric comparisons, reserved keywords in identifiers.
+Lx Robustness (optional): paraphrases, column reorderings, name obfuscations (Dr.Spider-style).
+GitHub
+
+(If you later want “workflow/agent” tasks like multi-turn tool-use or cross-table discovery, look to Spider 2.0 for inspiration, but keep it out of v1 because it biases toward enterprise DB agents rather than local single-DB SQL generation.)
+Spider 2.0
+GitHub

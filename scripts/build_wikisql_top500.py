@@ -543,7 +543,7 @@ def compute_database_checksum(db_path: Path) -> str:
         # Hash table schemas and data
         for table_name in tables:
             # Hash table schema
-            cursor = conn.execute(f"SELECT sql FROM sqlite_master WHERE name = ?", (table_name,))
+            cursor = conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (table_name,))
             schema = cursor.fetchone()[0]
             sha256_hash.update(schema.encode('utf-8'))
 
