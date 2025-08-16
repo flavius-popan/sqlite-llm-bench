@@ -11,27 +11,64 @@
 * Convert upstream text‑to‑SQL datasets into SQLite DBs with unified metadata storage.
 * Run evaluations via LiteLLM across openai‑compatible backends (LM Studio, Ollama, OpenRouter).
 * Support both single-database and multi-database datasets as first-class citizens.
+* Leverage SQLite views for flexible dataset subsetting and evaluation targeting.
 * Report execution‑based metrics with deterministic, serial runs.
 
 **Out‑of‑scope**
 
 * Shipping prebuilt `.db` artifacts. (We build locally from pinned sources.)
 * Non‑SQLite engines or custom SQLite extensions.
-* Complex split management or user configuration of evaluation subsets.
 
 ---
 
-## 2. System Overview
+## 2. Architecture Philosophy & Design Rationale
+
+### 2.1 SQLite-First Design Philosophy
+
+**Core Principle**: Leverage SQLite's strengths for simplicity, flexibility, and power.
+
+* **Views for Subsetting**: Use SQLite views to enable flexible dataset subsetting without code complexity
+* **Metadata as Data**: Store tags, difficulty, features as queryable data, not configuration
+* **SQL as Interface**: Let users express evaluation criteria in SQL rather than complex CLI flags
+* **Human Inspectable**: All data queryable via standard SQL tools for debugging and analysis
+* **Self-Contained**: No external dependencies - everything in SQLite databases
+
+### 2.2 Views-Based Dataset Architecture
+
+**Philosophy**: Build complete datasets, expose subsets via predefined views.
+
+```sql
+-- Example views in wikisql_gold.db
+CREATE VIEW v_questions_default AS
+  SELECT * FROM questions ORDER BY difficulty_score DESC LIMIT 500;
+
+CREATE VIEW v_questions_easy AS
+  SELECT * FROM questions WHERE difficulty = 'easy';
+
+CREATE VIEW v_questions_joins_only AS
+  SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%join%';
+
+CREATE VIEW v_questions_single_table AS
+  SELECT * FROM questions WHERE json_array_length(json_extract(tags, '$')) = 1;
+```
+
+**CLI Integration**: Users specify views for targeted evaluation:
+```bash
+python eval.py --dataset wikisql --view v_questions_joins_only
+python eval.py --dataset bird_mini_dev --view v_questions_financial_only
+```
+
+### 2.3 System Overview
 
 A single evaluation script fronts three subsystems:
 
-1. **Build** – dataset-specific scripts fetch, pin, normalize, and assemble dataset DBs.
-2. **Eval** – execute evaluation items against a selected model/backend (tool‑first; prompt‑fallback).
+1. **Build** – dataset-specific scripts fetch, pin, normalize, and assemble complete dataset DBs with predefined views.
+2. **Eval** – execute view-selected items against a selected model/backend (tool‑first; prompt‑fallback).
 3. **Report** – compute metrics and produce summaries from evaluation logs.
 
 **Separation of concerns**
 
-* **Dataset Builders** (per dataset) isolate source quirks and produce *uniform* database schemas.
+* **Dataset Builders** (per dataset) isolate source quirks, produce *uniform* database schemas, and define evaluation views.
 * **Backend Auto-detection** isolates inference quirks via LiteLLM with fallback chain.
 * **Evaluator** remains small: orchestrates prompts/tools, executes SQL in read‑only SQLite, logs outcomes, and computes metrics.
 
@@ -44,7 +81,7 @@ A single evaluation script fronts three subsystems:
 ```
 data/                               # Raw source data (git clones, downloads)
 ├── spider1/                       # Raw Spider1 data
-├── wikisql/                       # Raw WikiSQL data  
+├── wikisql/                       # Raw WikiSQL data
 └── bird_mini_dev/                 # Raw BIRD mini_dev data
 
 datasets/                          # Built/processed datasets
@@ -96,6 +133,11 @@ CREATE TABLE questions (
     metadata JSON                     -- Dataset-specific fields
 );
 
+-- Predefined evaluation views (always include v_questions_default)
+-- Note: Specific view definitions depend on available metadata per dataset
+CREATE VIEW v_questions_default AS
+  SELECT * FROM questions LIMIT 500;  -- Example - actual logic varies per dataset
+
 -- Provenance and versioning
 CREATE TABLE __bench_meta__ (
     dataset_id TEXT,
@@ -109,11 +151,34 @@ CREATE TABLE __bench_meta__ (
 );
 ```
 
-### 4.2 Schema Scope (Dynamic)
+### 4.2 Views-Based Subsetting System
+
+**Build Process**: Dataset builders create complete databases then apply `views.sql`:
+1. Populate full `questions` table with all available examples
+2. Apply predefined views from `datasets/{name}/views.sql`
+3. Always include `v_questions_default` as the canonical evaluation set
+
+**Evaluation Process**:
+```bash
+# Use default view (canonical evaluation set)
+python eval.py --dataset wikisql
+
+# Use specific view for targeted evaluation
+python eval.py --dataset wikisql --view v_questions_joins
+python eval.py --dataset bird_mini_dev --view v_questions_financial_db
+```
+
+**View Examples by Use Case**:
+* **Difficulty**: `v_questions_easy`, `v_questions_hard`
+* **SQL Features**: `v_questions_joins`, `v_questions_aggregation`, `v_questions_subquery`
+* **Database-Specific**: `v_questions_financial_db`, `v_questions_sports_db` (target specific source databases)
+* **Size**: `v_questions_tiny` (10 examples), `v_questions_small` (50 examples)
+
+### 4.3 Schema Scope (Dynamic)
 
 Schema scope is determined dynamically by parsing `gold_sql` to identify referenced tables and columns. Tools (`list_tables`, `describe_table`) respect this scope by default, showing only relevant schema elements to the model.
 
-### 4.3 Source Database Standards
+### 4.4 Source Database Standards
 
 Databases in `databases/` subdirectory:
 * Must be SQLite format with `.db` extension
@@ -125,17 +190,29 @@ Databases in `databases/` subdirectory:
 
 ## 5. Evaluation Pipeline
 
-### 5.1 Canonical Evaluation Sets
+### 5.1 Complete Dataset Building with View-Based Subsetting
 
-Each dataset build script creates exactly ONE canonical evaluation set stored in `{dataset}_gold.db`:
+Each dataset build script creates complete datasets with predefined evaluation views:
 
-* **WikiSQL**: 500 curated examples (hardest subset)
-* **Spider1**: ~1000 examples (full dev set)
-* **BIRD mini_dev**: 500 examples (complete dataset)
-* **Spider2-lite**: 24 examples (all with gold SQL)
-* **BIRD LiveSQLBench**: 270 examples (complete dataset)
+* **WikiSQL**: ~80K examples (complete) → `v_questions_default` (500 hardest)
+* **Spider1**: ~1K examples (full dev set) → `v_questions_default` (all dev)
+* **BIRD mini_dev**: 500 examples (complete) → `v_questions_default` (all 500)
+* **Spider2-lite**: 24 examples (all with gold SQL) → `v_questions_default` (all 24)
+* **BIRD LiveSQLBench**: 270 examples (complete) → `v_questions_default` (all 270)
 
-**No splits**: Users control evaluation scope via `--limit` parameter for testing.
+**Flexible Evaluation**: Users specify views instead of hardcoded splits:
+```bash
+# Default canonical sets
+python eval.py --dataset wikisql  # Uses v_questions_default (500 hardest)
+
+# Targeted evaluation via views
+python eval.py --dataset wikisql --view v_questions_easy        # Easy examples only
+python eval.py --dataset wikisql --view v_questions_joins       # Join queries only
+python eval.py --dataset wikisql --view v_questions_tiny        # 10 examples for testing
+
+# Still support --limit for ad-hoc testing
+python eval.py --dataset wikisql --view v_questions_joins --limit 5
+```
 
 ### 5.2 Backend Auto-Detection
 
@@ -143,14 +220,14 @@ Each dataset build script creates exactly ONE canonical evaluation set stored in
 BACKENDS = {
     "lm_studio": {
         "base_url": "http://localhost:1234",
-        "provider": "openai", 
+        "provider": "openai",
         "api_key": "lm-studio",  # Pre-filled dummy key
         "default_params": {"temperature": 0, "max_tokens": 1000}
     },
     "ollama": {
         "base_url": "http://localhost:11434",
         "provider": "ollama",
-        "api_key": "ollama",  # Pre-filled dummy key  
+        "api_key": "ollama",  # Pre-filled dummy key
         "default_params": {"temperature": 0, "max_tokens": 1000}
     },
     "openrouter": {
@@ -175,17 +252,17 @@ BACKENDS = {
 ```python
 def list_tables() -> List[str]:
     """Returns table names in target_db, filtered by schema scope.
-    
+
     Only shows tables referenced in the gold SQL for current question
     to prevent schema distraction and maintain focused context.
     """
 
 def describe_table(table_name: str) -> Dict[str, Any]:
     """Returns column information for table, filtered by schema scope.
-    
+
     Args:
         table_name: Must be one of the tables from list_tables()
-        
+
     Returns:
         {
             "columns": [
@@ -199,12 +276,12 @@ def describe_table(table_name: str) -> Dict[str, Any]:
 
 def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, Any]:
     """Executes query against target_db with safety limits.
-    
+
     Args:
         query: SQL SELECT statement (other statements blocked)
         limit: Maximum rows returned (default 1000)
         timeout: Query timeout in seconds (default 10)
-        
+
     Returns:
         {
             "success": True,
@@ -213,7 +290,7 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
             "row_count": 42,
             "execution_time": 0.123
         }
-        
+
     Or on error:
         {
             "success": False,
@@ -262,38 +339,49 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ## 9. CLI Design
 
-### 9.1 Simple Evaluation Interface
+### 9.1 View-Based Evaluation Interface
 
 ```bash
-# Full evaluation (all examples in dataset)
+# Default evaluation (uses v_questions_default view)
 python eval.py --dataset spider1 --backend lm_studio --model "qwen/qwen3-30b"
 
-# Quick testing (limit examples)
-python eval.py --dataset wikisql --limit 10
+# Targeted evaluation via views
+python eval.py --dataset wikisql --view v_questions_joins       # Only join queries
+python eval.py --dataset bird_mini_dev --view v_questions_financial_db  # Financial database only
+python eval.py --dataset wikisql --view v_questions_tiny        # Quick testing (10 examples)
 
 # Backend auto-detection (tries LM Studio, Ollama, OpenRouter)
-python eval.py --dataset bird_mini_dev
+python eval.py --dataset bird_mini_dev --view v_questions_financial_db
 
 # Parameter overrides
-python eval.py --dataset spider1 --temperature 0.7 --max-tokens 2000 --timeout 30
+python eval.py --dataset spider1 --view v_questions_hard --temperature 0.7 --max-tokens 2000
 
-# Backend specification (skip auto-detection)  
+# Legacy limit support (applies after view selection)
+python eval.py --dataset wikisql --view v_questions_joins --limit 5
+
+# Backend specification (skip auto-detection)
 python eval.py --dataset spider2_lite --backend openrouter
 ```
 
-### 9.2 Build Scripts
+### 9.2 Build Scripts with Views Integration
 
 Dataset building handled separately via Make or individual scripts:
 
 ```bash
-# Build individual datasets
-make build-wikisql
-make build-spider1
-make build-bird-mini-dev
+# Build individual datasets (includes views.sql application)
+make build-wikisql        # Builds complete WikiSQL + predefined views
+make build-spider1        # Builds complete Spider1 + predefined views
+make build-bird-mini-dev  # Builds complete BIRD mini_dev + predefined views
 
 # Build all datasets
 make build-all
 ```
+
+**Build Process with Views**:
+1. Dataset builder populates complete `questions` table
+2. Builder computes tags, features, complexity scores
+3. Builder applies `datasets/{name}/views.sql` to create predefined views
+4. Validation ensures `v_questions_default` exists
 
 ---
 
@@ -402,36 +490,45 @@ make build-all
 
 ### Phase 2: Dataset Integration
 
-#### 2.1 WikiSQL Alignment (High Priority)
-- [ ] Align existing WikiSQL database with new schema standards
-- [ ] Separate questions/metadata into wikisql_gold.db
+#### 2.1 WikiSQL Complete Dataset Building (High Priority)
+- [ ] Build complete WikiSQL dataset (~80K examples) with new schema standards
+- [ ] Create `datasets/wikisql/views.sql` with predefined evaluation views
+- [ ] Ensure `v_questions_default` selects canonical 500 examples
 - [ ] Move data tables to databases/wikisql_tables.db
-- [ ] Test with unified evaluation system
-- [ ] Validate metrics match existing implementation
+- [ ] Test view-based evaluation system
+- [ ] Validate metrics match existing 500-example implementation
 
-#### 2.2 Spider1 Integration (Ready for Implementation)
+#### 2.2 Spider1 Complete Dataset Integration (Ready for Implementation)
 - [ ] **Complete Dataset Available**: 1,034 dev examples with 100% gold SQL coverage
-- [ ] Build spider1_gold.db with questions table
+- [ ] Build spider1_gold.db with complete questions table
+- [ ] Create `datasets/spider1/views.sql` with database-specific and difficulty-based views
+- [ ] Ensure `v_questions_default` includes all dev examples
+- [ ] Add database-specific views (e.g., `v_questions_concert_singer_db`, `v_questions_car_db`)
 - [ ] Copy 20 domain databases to databases/ subdirectory
 - [ ] Implement multi-database context management
-- [ ] Test SQL execution evaluation across all domains
+- [ ] Test view-based evaluation across all domains
 
 **Spider1 Advantages**:
 - Complete gold SQL coverage (vs Spider2-lite's 24/135)
-- Cross-domain evaluation (20 databases)
+- Cross-domain evaluation (20 databases) enables domain-specific views
 - Established benchmark with difficulty classifications
-- ~1000 examples for comprehensive evaluation
+- ~1000 examples for comprehensive evaluation with flexible subsetting
 
-#### 2.3 BIRD mini_dev Integration (High Quality)
+#### 2.3 BIRD mini_dev Complete Integration (High Quality)
 - [ ] **Native SQLite**: 500 examples, 11 databases, no conversion needed
-- [ ] Build bird_mini_dev_gold.db with evidence field support
+- [ ] Build bird_mini_dev_gold.db with complete dataset and evidence field support
+- [ ] Create `datasets/bird_mini_dev/views.sql` with database-specific views
+- [ ] Add database-specific views (e.g., `v_questions_financial_db`, `v_questions_european_football_db`)
+- [ ] Ensure `v_questions_default` includes all 500 examples
 - [ ] Copy 11 domain databases to databases/ subdirectory
 - [ ] Integrate evidence field into prompt templates
-- [ ] Test with large databases (up to 570MB)
+- [ ] Test view-based evaluation with large databases (up to 570MB)
 
-#### 2.4 Spider2-lite Integration (Limited Scope)
-- [ ] **Focus on 24 high-quality instances** with gold SQL
-- [ ] Build spider2_lite_gold.db for evaluation
+#### 2.4 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
+- [ ] **Focus on 24 high-quality instances** with gold SQL (scope limited by data availability)
+- [ ] Build spider2_lite_gold.db with complete available dataset
+- [ ] Create `datasets/spider2_lite/views.sql` (may be minimal due to small dataset)
+- [ ] Ensure `v_questions_default` includes all 24 examples
 - [ ] Copy required subset of 30+ databases
 - [ ] Embed external knowledge in metadata JSON field
 - [ ] Validate enterprise-scale query execution
@@ -519,12 +616,12 @@ def get_database_context(item_id: str, dataset: str) -> Dict[str, Any]:
     """Get database context for evaluation item"""
     gold_db = f"datasets/{dataset}/{dataset}_gold.db"
     conn = sqlite3.connect(gold_db)
-    
+
     item = conn.execute(
-        "SELECT target_db, question, gold_sql, metadata FROM questions WHERE item_id = ?", 
+        "SELECT target_db, question, gold_sql, metadata FROM questions WHERE item_id = ?",
         (item_id,)
     ).fetchone()
-    
+
     return {
         "target_db_path": f"datasets/{dataset}/databases/{item['target_db']}",
         "question": item["question"],
@@ -552,16 +649,16 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
     """Execute SQL against correct database automatically"""
     db_path = context["target_db_path"]
     conn = sqlite3.connect(db_path, uri=True)
-    
+
     try:
         # Validate query safety
         if not is_safe_query(query):
             return {"success": False, "error": "Unsafe query blocked"}
-            
+
         # Execute with timeout and limits
         result = execute_with_limits(conn, query, limit, timeout=10)
         return {"success": True, **result}
-        
+
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:
@@ -573,26 +670,30 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 ## 16. Dataset-Specific Implementation Notes
 
 ### 16.1 WikiSQL Implementation
-- **Architecture**: Questions in gold.db, data in databases/wikisql_tables.db
+- **Architecture**: Complete dataset (~80K) in gold.db, data in databases/wikisql_tables.db
+- **Views Strategy**: Default view selects canonical 500 examples; additional views for features/subsets
 - **Tool Use**: Simple single-database targeting
-- **Performance**: Optimized for speed, 500 curated examples
-- **Migration**: Align existing implementation with new standards
+- **Performance**: Full dataset enables flexible evaluation; default view maintains speed
+- **Migration**: Expand from 500 to complete dataset with view-based canonical subset
 
-### 16.2 Spider1 Implementation  
-- **Architecture**: Questions in gold.db, 20 domain databases in databases/
-- **Scale**: ~1000 examples across all domains for comprehensive coverage
+### 16.2 Spider1 Implementation
+- **Architecture**: Complete dev set (~1K) in gold.db, 20 domain databases in databases/
+- **Views Strategy**: Default view includes all examples; database-specific views enable targeted evaluation
+- **Scale**: ~1000 examples across all domains with flexible database/difficulty subsetting
 - **Tool Use**: Context-aware database targeting per question
-- **Advantage**: Complete gold SQL coverage vs Spider2-lite's limited scope
+- **Advantage**: Complete gold SQL coverage + database-specific evaluation capabilities
 
 ### 16.3 BIRD mini_dev Implementation
-- **Architecture**: Questions in gold.db, 11 domain databases in databases/
-- **Scale**: 500 examples with evidence field integration
+- **Architecture**: Complete dataset (500) in gold.db, 11 domain databases in databases/
+- **Views Strategy**: Default view includes all examples; database-specific views for targeted evaluation
+- **Scale**: 500 examples with evidence field integration and database subsetting
 - **Tool Use**: Context-aware targeting with large database optimization
-- **Features**: Evidence field in metadata JSON, handles databases up to 570MB
+- **Features**: Evidence field in metadata JSON, database-specific views, handles databases up to 570MB
 
 ### 16.4 Spider2-lite Implementation
-- **Architecture**: Questions in gold.db, subset of 30+ databases as needed
-- **Scale**: 24 high-quality examples (all with gold SQL)
+- **Architecture**: Complete available dataset (24) in gold.db, subset of 30+ databases as needed
+- **Views Strategy**: Minimal views due to small dataset size; default view includes all examples
+- **Scale**: 24 high-quality examples (all available with gold SQL)
 - **Tool Use**: Context-aware targeting with external knowledge injection
 - **Focus**: Quality over quantity due to limited gold SQL availability
 
