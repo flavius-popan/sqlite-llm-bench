@@ -38,12 +38,8 @@
 **Philosophy**: Build complete datasets, expose subsets via predefined views.
 
 ```sql
--- Example views in wikisql_gold.db
 CREATE VIEW v_questions_default AS
   SELECT * FROM questions ORDER BY difficulty_score DESC LIMIT 500;
-
-CREATE VIEW v_questions_easy AS
-  SELECT * FROM questions WHERE difficulty = 'easy';
 
 CREATE VIEW v_questions_joins_only AS
   SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%join%';
@@ -87,6 +83,7 @@ data/                               # Raw source data (git clones, downloads)
 datasets/                          # Built/processed datasets
 ├── spider1/
 │   ├── spider1_gold.db           # Questions, gold SQL, metadata
+│   ├── prompt_builder.py         # Dataset-specific prompting logic
 │   ├── databases/                # Source databases for tool queries
 │   │   ├── concert_singer.db
 │   │   ├── car_1.db
@@ -94,10 +91,19 @@ datasets/                          # Built/processed datasets
 │   └── LICENSE                   # Dataset license file
 ├── wikisql/
 │   ├── wikisql_gold.db           # Questions, gold SQL, metadata
+│   ├── prompt_builder.py         # Dataset-specific prompting logic
 │   ├── databases/
 │   │   └── wikisql_tables.db     # Actual data tables
 │   └── LICENSE
 └── ...
+
+model_adapters/                    # Model-specific response parsing
+├── __init__.py                    # Parser registry & factory
+├── base.py                        # Abstract base classes
+├── harmony.py                     # OpenAI Harmony format (gpt-oss)
+├── anthropic.py                   # Claude-specific parsing
+├── traditional.py                 # Standard OpenAI/LM Studio
+└── utils.py                       # Shared SQL extraction patterns
 ```
 
 ### 3.2 Multi-Database Support
@@ -133,20 +139,20 @@ CREATE TABLE questions (
 );
 
 -- Predefined evaluation views (always include v_questions_default)
-CREATE VIEW v_questions_default AS 
+CREATE VIEW v_questions_default AS
   SELECT * FROM questions LIMIT 500;  -- Example - actual logic varies per dataset
 
 -- Example auto-generated tag-based views
-CREATE VIEW v_questions_joins AS 
+CREATE VIEW v_questions_joins AS
   SELECT * FROM questions WHERE json_extract(tags, '$.sql') LIKE '%"join"%';
 
-CREATE VIEW v_questions_aggregation AS 
+CREATE VIEW v_questions_aggregation AS
   SELECT * FROM questions WHERE json_extract(tags, '$.sql') LIKE '%"aggregation"%';
 
-CREATE VIEW v_questions_single_table AS 
+CREATE VIEW v_questions_single_table AS
   SELECT * FROM questions WHERE json_extract(tags, '$.complexity') LIKE '%"single_table"%';
 
-CREATE VIEW v_questions_hard AS 
+CREATE VIEW v_questions_hard AS
   SELECT * FROM questions WHERE json_extract(tags, '$.difficulty') = 'hard';
 
 -- Provenance and versioning
@@ -171,7 +177,7 @@ def generate_tags(gold_sql: str, difficulty: str = None) -> Dict:
     """Generate standardized tags from SQL analysis"""
     tags = {
         "sql": _detect_sql_features(gold_sql),        # ["join", "aggregation", "subquery"]
-        "complexity": _detect_complexity(gold_sql),   # ["single_table", "multi_table"] 
+        "complexity": _detect_complexity(gold_sql),   # ["single_table", "multi_table"]
     }
     if difficulty:
         tags["difficulty"] = difficulty              # Original dataset difficulty preserved
@@ -367,6 +373,52 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ---
 
+## 8.3 Model Adapter Architecture
+
+### 8.3.1 Goal
+
+Evaluate each model's SQLite capabilities using optimal prompting for that model, without compromising evaluation validity.
+
+**Core Principle**: All models receive the same information content, but formatted optimally for their architecture.
+
+### 8.3.2 Two-Layer Design
+
+**Dataset Prompt Builders** (`datasets/{dataset}/prompt_builder.py`):
+- Create information content: table schema, dataset-specific hints, task instructions
+- Handle data format clarifications (WikiSQL comma-formatted TEXT columns)
+
+**Model Response Adapters** (`model_adapters/{family}.py`):
+- Format content into optimal message structure for each model family
+- Handle model-specific response parsing and SQL extraction
+- Manage tool calling mechanics (OpenAI standard vs Harmony vs prompt-only)
+
+### 8.3.3 Prompt Content Boundary
+
+**Adjust for data format issues (Permitted)**:
+- Data representation facts: "Column contains comma-formatted numbers stored as TEXT"
+- Schema presentation clarity: Column types, constraints, available tables
+- Dataset-specific data quirks that affect query validity
+
+**Do not adjust for SQL reasoning difficulties (Prohibited)**:
+- SQL concept hints: "Use GROUP BY for aggregation"
+- Solution guidance: "For averages, use AVG() function"
+- SQL syntax teaching: Examples of aggregate functions or WHERE clauses
+
+**Test Principle**: Evaluate SQL reasoning ability given clear data information, not prompt engineering skill.
+
+### 8.3.4 Model Grouping
+
+Group by response parsing needs, not vendor names:
+- Same adapter for similar response formats (version handling within adapter)
+- Split adapters when parsing logic becomes incompatible
+- Model name parsing determines adapter selection via factory pattern
+
+### 8.3.5 LiteLLM Integration
+
+LiteLLM handles communication layer (API calls, provider detection), model adapters handle SQL-specific parsing and formatting.
+
+---
+
 ## 9. CLI Design
 
 ### 9.1 View-Based Evaluation Interface
@@ -469,9 +521,18 @@ make build-all
 2. Implement conversion to standard database schema
 3. Generate `{dataset}_gold.db` with questions table
 4. Populate `databases/` subdirectory with source data
-5. Add dataset to evaluation registry
+5. Create `datasets/{dataset}/prompt_builder.py` for dataset-specific prompting logic
+6. Add dataset to evaluation registry
 
-### 12.2 Adding Backends
+### 12.2 Adding Model Families
+
+1. Determine if new model fits existing response parser (group by response format, not vendor)
+2. If new parsing needed, create `model_adapters/{family}.py` with ResponseParser interface
+3. Add model name patterns to adapter factory function
+4. Test with dataset prompt builders to ensure optimal formatting
+5. Validate prompt content boundary compliance (data format vs SQL reasoning)
+
+### 12.3 Adding Backends
 
 1. Add backend configuration to BACKENDS dictionary
 2. Test LiteLLM compatibility and tool support
@@ -666,7 +727,7 @@ def _detect_sql_features(sql: str) -> List[str]:
     """Detect basic SQL features"""
     sql_upper = sql.upper()
     features = []
-    
+
     if "JOIN" in sql_upper:
         features.append("join")
     if any(agg in sql_upper for agg in ["COUNT(", "SUM(", "AVG(", "MAX(", "MIN("]):
@@ -677,21 +738,21 @@ def _detect_sql_features(sql: str) -> List[str]:
         features.append("order_by")
     if "(" in sql_upper and "SELECT" in sql_upper[sql_upper.find("("):]:
         features.append("subquery")
-        
+
     return features
 
 def _detect_complexity(sql: str) -> List[str]:
     """Detect basic complexity patterns"""
     sql_upper = sql.upper()
     complexity = []
-    
+
     # Simple table count
     table_indicators = sql_upper.count("FROM") + sql_upper.count("JOIN")
     if table_indicators <= 1:
         complexity.append("single_table")
     else:
         complexity.append("multi_table")
-        
+
     return complexity
 
 
