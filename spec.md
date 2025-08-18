@@ -736,10 +736,12 @@ make build-all
 - [ ] Provenance tracking and reproducibility
 
 #### 15.15 Output and Logging
-- [ ] **JSONL Logs**: Detailed per-item logs with raw responses and extracted SQL
-- [ ] **Summary Metrics**: EX/EM rates with feature stratification
-- [ ] **Human-Readable Reports**: Quick analysis and debugging information
+- [ ] **JSONL Logs**: Streaming output during evaluation with detailed per-item logs and raw responses
+- [ ] **HTML Reports**: Generated from JSONL at completion with rich templated output and full prompt/response pairs
+- [ ] **Template System**: Pure HTML generation with filtering/summary capabilities, no web framework needed
+- [ ] **Summary Metrics**: EX/EM rates with feature stratification embedded in HTML
 - [ ] **Error Categorization**: Parse, execution, timeout, and blocked statement tracking
+- [ ] **Future SQLite Results**: Database schema design for cross-run analysis and SQL agent querying (Phase 5+)
 
 ### Phase 5: Testing and Validation
 
