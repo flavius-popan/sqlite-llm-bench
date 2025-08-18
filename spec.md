@@ -64,40 +64,61 @@ Drawing from OpenAI's [gpt-oss evaluation approach](https://cookbook.openai.com/
 
 **Key Insight**: *Simplicity and focus trump architectural elegance in evaluation systems* - but our multi-model mission requires abstraction layers that single-model evals don't need.
 
-### 2.3 Practical Developer Focus
+### 2.4 Practical Developer Focus
 
 **Principle**: Serve developers building real systems, not just researchers publishing papers.
 
 * **Local-First**: Run on common hardware with local models (LM Studio, Ollama)
-* **Single CLI**: One command to test everything or focus on specific capabilities
+* **Three-Tier Complexity**: Match tool complexity to use case complexity
 * **Actionable Results**: Clear identification of which SQL patterns work vs. fail
 * **Production Relevance**: Test scenarios developers actually encounter
 
-### 2.4 System Architecture Overview
+### 2.5 Three-Tier Architecture Overview
 
-Three integrated subsystems support both discovery and benchmarking:
+**Core Design**: Start simple, scale complexity as needed through three distinct tiers.
 
-1. **Build** – Convert industry datasets into SQLite DBs with rich metadata and capability-focused views
-2. **Test** – Execute targeted evaluations using tools-first approach with prompt fallback
-3. **Analyze** – Generate both detailed failure analysis and standardized benchmark scores
-
-**Views-Based Testing**: Target specific capabilities without code complexity:
-
-```sql
-CREATE VIEW v_questions_joins_only AS
-  SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%join%';
-
-CREATE VIEW v_questions_aggregation AS
-  SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%aggregation%';
-```
-
-**CLI Integration**: Test specific capabilities or run comprehensive benchmarks:
+#### **Tier 1: Instant Setup (Zero-Config)**
 ```bash
-# Test specific SQL features
-python eval.py --dataset wikisql --view v_questions_joins_only
+python eval.py --questions questions.jsonl --db mydata.db
+```
+* **Purpose**: Immediate testing with minimal setup
+* **Input**: JSONL/CSV questions + database file(s)
+* **Features**: Default prompt, direct file access, basic evaluation
+* **Use Case**: Quick model testing, proof of concept, simple datasets
 
-# Full benchmark across all datasets
-python eval.py --comprehensive --model "your-model"
+#### **Tier 2: Templated Datasets (Organized)**
+```bash
+python create_dataset.py  # Interactive setup
+python eval.py mydataset   # CLI infers datasets/mydataset/
+```
+* **Purpose**: Organized project structure with custom prompts
+* **Input**: Structured dataset directories with questions.jsonl + databases/
+* **Features**: Custom prompts, organized files, easier CLI usage
+* **Use Case**: Ongoing projects, custom datasets, learning examples
+
+#### **Tier 3: Full Upgrade (Advanced Features)**
+```bash
+python build_dataset.py --input datasets/mydataset/
+python eval.py mydataset --view v_questions_joins
+```
+* **Purpose**: Sophisticated analysis with rich metadata
+* **Input**: Tier 2 datasets converted to SQLite questions tables
+* **Features**: Auto-generated tags, subset views, cross-dataset analysis
+* **Use Case**: Research workflows, comprehensive benchmarking, publication
+
+#### **Dataset Classifications**
+* **hello-world**: Tier 2 (learning example, simple structure, easy to understand)
+* **wikisql, spider1, bird**: Tier 3 (full advanced features, tags, views, analysis)
+
+#### **CLI Interface Design**
+```bash
+# Tier 1: Direct file evaluation
+python eval.py --questions my_questions.jsonl --db my_database.db
+
+# Tier 2 & 3: Dataset evaluation (CLI infers datasets/ directory)
+python eval.py hello-world
+python eval.py wikisql --view v_questions_joins_only
+python eval.py bird --limit 50
 ```
 
 ---
@@ -124,54 +145,103 @@ python eval.py --comprehensive --model "your-model"
 
 ---
 
-## 4. Data Architecture
+## 4. Three-Tier Data Architecture
 
-### 4.1 Directory Structure
+### 4.1 Tier Structure Overview
 
+The workbench supports three tiers of complexity, allowing users to start simple and scale as needed:
+
+**Tier 1 (Instant Setup)**: Direct file evaluation with minimal setup
+**Tier 2 (Templated Datasets)**: Organized project structure with custom prompts
+**Tier 3 (Advanced Features)**: Full SQLite integration with rich metadata and analysis
+
+### 4.2 Directory Structure by Tier
+
+#### **Tier 1: Direct File Mode**
 ```
-data/                               # Raw source data (git clones, downloads)
-├── spider1/                       # Raw Spider1 data
-├── wikisql/                       # Raw WikiSQL data
-└── bird_mini_dev/                 # Raw BIRD mini_dev data
+# No specific directory structure required
+questions.jsonl                    # User's question file
+mydata.db                         # User's database file
+# OR
+databases/                        # Directory of database files
+├── sales.db
+├── inventory.db
+└── customers.db
+```
 
-datasets/                          # Built/processed datasets
-├── spider1/
-│   ├── spider1_gold.db           # Questions, gold SQL, metadata
-│   ├── prompt_builder.py         # Dataset-specific prompting logic
-│   ├── databases/                # Source databases for tool queries
+#### **Tier 2: Templated Datasets**
+```
+datasets/                         # All datasets live here
+├── hello-world/                  # Tier 2 example (learning)
+│   ├── questions.jsonl          # Questions in standard format
+│   ├── databases/               # Database files
+│   │   ├── customers.db
+│   │   ├── orders.db
+│   │   └── products.db
+│   ├── prompt_template.txt      # Optional custom prompt
+│   └── README.md               # Auto-generated instructions
+├── mydataset/                   # User-created Tier 2 dataset
+│   ├── questions.jsonl
+│   ├── databases/
+│   │   └── mydata.db
+│   └── README.md
+└── ...
+```
+
+#### **Tier 3: Advanced Features**
+```
+datasets/                         # Advanced datasets with full features
+├── wikisql/                     # Tier 3 curated dataset
+│   ├── questions.jsonl          # Standard format questions
+│   ├── wikisql_gold.db         # SQLite questions table with metadata
+│   ├── databases/              # Source databases
+│   │   └── wikisql_tables.db
+│   ├── prompt_template.txt     # Custom WikiSQL prompt
+│   ├── views.sql              # Predefined evaluation views
+│   └── LICENSE
+├── spider1/                     # Tier 3 curated dataset
+│   ├── questions.jsonl
+│   ├── spider1_gold.db         # Rich metadata and tags
+│   ├── databases/              # 20 domain databases
 │   │   ├── concert_singer.db
 │   │   ├── car_1.db
-│   │   └── ... (20 total)
-│   └── LICENSE                   # Dataset license file
-├── wikisql/
-│   ├── wikisql_gold.db           # Questions, gold SQL, metadata
-│   ├── prompt_builder.py         # Dataset-specific prompting logic
-│   ├── databases/
-│   │   └── wikisql_tables.db     # Actual data tables
+│   │   └── ... (18 more)
+│   ├── prompt_template.txt
+│   ├── views.sql
 │   └── LICENSE
-└── ...
-
-model_adapters/                    # Model-specific response parsing
-├── __init__.py                    # Parser registry & factory
-├── base.py                        # Abstract base classes
-├── harmony.py                     # OpenAI Harmony format (gpt-oss)
-├── anthropic.py                   # Claude-specific parsing
-├── traditional.py                 # Standard OpenAI/LM Studio
-└── utils.py                       # Shared SQL extraction patterns
+└── bird/                        # Tier 3 curated dataset
+    ├── questions.jsonl
+    ├── bird_gold.db
+    ├── databases/               # 11 domain databases
+    ├── prompt_template.txt
+    ├── views.sql
+    └── LICENSE
 ```
 
-### 4.2 Multi-Database Support
+### 4.3 Question File Format (Universal)
 
-**Core principle**: Each dataset has a "gold" database containing questions/metadata and a `databases/` subdirectory containing source data for tool queries.
+All tiers use the same question format for consistency:
 
-**Manifest fields** (stored in database, not separate files):
-* `db_path`: Directory path containing the dataset (e.g., `"datasets/spider1/"`)
-* `target_db`: Specific database filename within `databases/` subdirectory (e.g., `"concert_singer.db"`)
+#### **Single Database Mode**
+```jsonl
+{"question": "How many users are active?", "sql": "SELECT COUNT(*) FROM users WHERE active = 1", "table": "users"}
+{"question": "Top selling products?", "sql": "SELECT name, sales FROM products ORDER BY sales DESC LIMIT 10", "table": "products"}
+```
 
-**Single vs Multi-database**:
-* **WikiSQL**: Questions in `wikisql_gold.db`, data tables in `databases/wikisql_tables.db`
-* **Spider1**: Questions in `spider1_gold.db`, 20 domain databases in `databases/`
-* **BIRD**: Questions in `bird_mini_dev_gold.db`, 11 domain databases in `databases/`
+#### **Multi-Database Mode**
+```jsonl
+{"question": "Concert attendance?", "sql": "SELECT COUNT(*) FROM attendees", "db": "concert.db", "table": "attendees"}
+{"question": "Car sales by year?", "sql": "SELECT year, COUNT(*) FROM sales GROUP BY year", "db": "automotive.db", "table": "sales"}
+```
+
+### 4.4 Auto-Detection Logic
+
+The evaluation system automatically detects the appropriate mode:
+
+1. **CLI with explicit flags**: `--questions` + `--db` → Tier 1 (direct file mode)
+2. **CLI with dataset name**: `mydataset` → Tier 2/3 (infers `datasets/mydataset/`)
+3. **Question format detection**: Single vs multi-database based on presence of `"db"` field
+4. **Database path detection**: File vs directory determines connection logic
 
 ---
 
@@ -476,48 +546,76 @@ LiteLLM handles communication layer (API calls, provider detection), model adapt
 
 ## 10. CLI Design
 
-### 10.1 View-Based Evaluation Interface
+### 10.1 Three-Tier CLI Interface
 
+The CLI supports three tiers of complexity with automatic detection and inference:
+
+#### **Tier 1: Instant Setup (Direct File Mode)**
 ```bash
-# Default evaluation (uses v_questions_default view)
-python eval.py --dataset spider1 --backend lm_studio --model "qwen/qwen3-30b"
+# Single database mode
+python eval.py --questions questions.jsonl --db mydata.db
 
-# Targeted evaluation via views
-python eval.py --dataset wikisql --view v_questions_joins       # Only join queries
-python eval.py --dataset bird_mini_dev --view v_questions_financial_db  # Financial database only
-python eval.py --dataset wikisql --view v_questions_tiny        # Quick testing (10 examples)
+# Multi-database mode
+python eval.py --questions questions.jsonl --db databases/
 
-# Backend auto-detection (tries LM Studio, Ollama, OpenRouter)
-python eval.py --dataset bird_mini_dev --view v_questions_financial_db
-
-# Parameter overrides
-python eval.py --dataset spider1 --view v_questions_hard --temperature 0.7 --max-tokens 2000
-
-# Legacy limit support (applies after view selection)
-python eval.py --dataset wikisql --view v_questions_joins --limit 5
-
-# Backend specification (skip auto-detection)
-python eval.py --dataset spider2_lite --backend openrouter
+# With model specification
+python eval.py --questions questions.jsonl --db mydata.db --model "llama3:8b"
 ```
 
-### 10.2 Build Scripts with Views Integration
-
-Dataset building handled separately via Make or individual scripts:
-
+#### **Tier 2 & 3: Dataset Mode (Organized)**
 ```bash
-# Build individual datasets (includes views.sql application)
-make build-wikisql        # Builds complete WikiSQL + predefined views
-make build-spider1        # Builds complete Spider1 + predefined views
-make build-bird-mini-dev  # Builds complete BIRD mini_dev + predefined views
+# Basic dataset evaluation (CLI infers datasets/ directory)
+python eval.py hello-world
+python eval.py mydataset
+python eval.py wikisql
 
-# Build all datasets
-make build-all
+# Tier 3 advanced features (views, limits, targeting)
+python eval.py wikisql --view v_questions_joins
+python eval.py bird --view v_questions_financial_db --limit 50
+python eval.py spider1 --view v_questions_hard
+
+# Backend and model specification
+python eval.py wikisql --model "gpt-4" --backend openrouter
+python eval.py hello-world --model "llama3:8b" --backend ollama
 ```
 
-**Build Process with Views**:
-1. Dataset builder populates complete `questions` table
-2. Builder computes tags, features, complexity scores
-3. Builder applies `datasets/{name}/views.sql` to create predefined views
+#### **CLI Auto-Detection Logic**
+1. **Explicit flags**: `--questions` + `--db` → Tier 1 (direct file mode)
+2. **Dataset name**: `mydataset` → Infers `datasets/mydataset/` (Tier 2/3)
+3. **Question format**: Auto-detects single vs multi-database from JSONL content
+4. **Feature availability**: Views and advanced options only available for Tier 3 datasets
+
+### 10.2 Dataset Creation and Management
+
+#### **Interactive Dataset Creation**
+```bash
+# Create new dataset with guided prompts
+python create_dataset.py
+
+# Non-interactive dataset creation
+python create_dataset.py --name mydataset --type single-db --prompt default
+
+# List available datasets
+python eval.py --list
+
+# Show dataset information
+python eval.py mydataset --info
+```
+
+#### **Dataset Upgrade System**
+```bash
+# Upgrade Tier 2 to Tier 3 (adds SQLite tables, tags, views)
+python build_dataset.py --input datasets/mydataset/
+
+# Upgrade with custom options
+python build_dataset.py --input datasets/mydataset/ --generate-views --add-tags
+```
+
+#### **Build Process Overview**
+1. **Raw Data Processing**: Convert upstream datasets to standard JSONL format
+2. **Dataset Creation**: Use `create_dataset.py` to build Tier 2 structure
+3. **Advanced Upgrade**: Use `build_dataset.py` to add Tier 3 features (tags, views, metadata)
+4. **Validation**: Automatic testing of dataset integrity and evaluation pipeline
 4. Validation ensures `v_questions_default` exists
 
 ---
@@ -614,126 +712,113 @@ make build-all
 
 ## 15. Implementation Plan
 
-### Phase 1: Core Infrastructure
+### Phase 1: Three-Tier Architecture Foundation
 
-#### 15.1 Backend Auto-Detection System
+#### 15.1 Tier 1: Direct File Evaluation (Zero-Config)
+- [ ] Implement CLI flags: `--questions` and `--db` for direct file mode
+- [ ] Auto-detect single vs multi-database mode from question format
+- [ ] Create default prompt template for universal compatibility
+- [ ] Build basic evaluation pipeline: load questions → connect DB → evaluate
+- [ ] Support JSONL/CSV question file parsing
+- [ ] Implement simple database targeting logic (file vs directory)
+
+#### 15.2 Tier 2: Dataset Templates and Organization
+- [ ] Create `create_dataset.py` with interactive prompts
+- [ ] Build template generation: questions.jsonl, databases/, README.md
+- [ ] Implement CLI dataset inference: `mydataset` → `datasets/mydataset/`
+- [ ] Add custom prompt template support via `prompt_template.txt`
+- [ ] Create hello-world dataset (Tier 2 example):
+  - Synthetic data (customers, orders, products tables)
+  - 10 examples covering 5 SQL features (2 examples each)
+  - Educational README and simple structure
+- [ ] Implement dataset listing and info commands
+
+#### 15.3 Tier 3: Advanced Features and Metadata
+- [ ] Create `build_dataset.py` utility for Tier 2 → Tier 3 upgrades
+- [ ] Implement shared SQL analyzer for auto-generated tags
+- [ ] Build SQLite questions table creation with metadata
+- [ ] Add view generation system (tag-based, feature-based)
+- [ ] Create unified upgrade process for all dataset types
+- [ ] Add provenance tracking in __bench_meta__ tables
+
+#### 15.4 Backend Auto-Detection System
 - [ ] Implement BACKENDS configuration dictionary
 - [ ] Create backend auto-detection with local-first ordering
 - [ ] Add CLI parameter override support
 - [ ] Test LM Studio, Ollama, OpenRouter integration
 
-#### 15.2 Tool Interface Implementation
+#### 15.5 Tool Interface Implementation
 - [ ] Implement standardized tool signatures
-- [ ] Add automatic database targeting (hidden from models)
-- [ ] Create schema scope filtering system
+- [ ] Add automatic database targeting (simplified - questions specify table/db)
+- [ ] Remove complex schema scope filtering (show full schema)
 - [ ] Build SQL safety validation
 
-#### 15.3 Database-Only Metadata System
-- [ ] Create unified database schema standards
-- [ ] Implement dynamic schema scope detection from gold SQL
-- [ ] Build database loading and validation utilities
-- [ ] Add provenance tracking in __bench_meta__ tables
+### Phase 2: Dataset Integration (Tier 3 Conversions)
 
-#### 15.4 Hello-World Integration Dataset
-- [ ] Build `hello-world` dataset with synthetic data (customers, orders, products tables)
-- [ ] Create 10 examples covering 5 SQL features (2 examples each):
-  - **Absolute Basics**: `SELECT *` and `SELECT columns`
-  - **Basic Filtering**: `WHERE` conditions
-  - **Table Joins**: `INNER/LEFT JOIN`
-  - **Aggregation**: `GROUP BY` with `COUNT/SUM/AVG`
-  - **Sorting & Limiting**: `ORDER BY` with `LIMIT`
-- [ ] Add sample views demonstrating view-based subsetting patterns
-- [ ] Ensure build script is simple and educational for users creating custom datasets
-- [ ] Ships with project as integration test and learning example
-
-### Phase 2: Dataset Integration
-
-#### 15.5 WikiSQL Complete Dataset Building (High Priority)
-- [ ] Build complete WikiSQL dataset (~80K examples) with new schema standards
-- [ ] Implement shared SQL analyzer for auto-generated tags
-- [ ] Create `datasets/wikisql/views.sql` with tag-based predefined evaluation views
-- [ ] Ensure `v_questions_default` selects canonical 500 examples
-- [ ] Preserve existing WikiSQL difficulty classification in tags (if available)
-- [ ] Move data tables to databases/wikisql_tables.db
-- [ ] Test view-based evaluation system
+#### 15.6 WikiSQL Complete Dataset Building (High Priority)
+- [ ] Convert WikiSQL raw data to standard questions.jsonl format
+- [ ] Use build_dataset.py to create Tier 3 dataset with full features
+- [ ] Create tag-based views: joins, aggregation, complexity levels
+- [ ] Ensure v_questions_default selects canonical 500 examples
+- [ ] Preserve existing WikiSQL difficulty classification in tags
 - [ ] Validate metrics match existing 500-example implementation
 
-#### 15.6 Spider1 Complete Dataset Integration (Ready for Implementation)
-- [ ] **Complete Dataset Available**: 1,034 dev examples with 100% gold SQL coverage
-- [ ] Build spider1_gold.db with complete questions table and auto-generated tags
+#### 15.7 Spider1 Complete Dataset Integration (Ready for Implementation)
+- [ ] Convert Spider1 raw data to standard questions.jsonl format
+- [ ] Use build_dataset.py to create Tier 3 dataset
 - [ ] Preserve Spider1 original difficulty values (Easy/Medium/Hard/Extra Hard) in tags
-- [ ] Create `datasets/spider1/views.sql` with tag-based and database-specific views
-- [ ] Ensure `v_questions_default` includes all dev examples
-- [ ] Add database-specific views (e.g., `v_questions_concert_singer_db`, `v_questions_car_db`)
+- [ ] Create multi-database views and domain-specific views
 - [ ] Copy 20 domain databases to databases/ subdirectory
-- [ ] Implement multi-database context management
-- [ ] Test view-based evaluation across all domains
+- [ ] Test multi-database evaluation across all domains
 
-**Spider1 Advantages**:
-- Complete gold SQL coverage (vs Spider2-lite's 24/135)
-- Cross-domain evaluation (20 databases) enables domain-specific views
-- Established benchmark with difficulty classifications
-- ~1000 examples for comprehensive evaluation with flexible subsetting
-
-#### 15.7 BIRD mini_dev Complete Integration (High Quality)
-- [ ] **Native SQLite**: 500 examples, 11 databases, no conversion needed
-- [ ] Build bird_mini_dev_gold.db with complete dataset, evidence field support, and auto-generated tags
+#### 15.8 BIRD mini_dev Complete Integration (High Quality)
+- [ ] Convert BIRD raw data to standard questions.jsonl format (with evidence fields)
+- [ ] Use build_dataset.py to create Tier 3 dataset
 - [ ] Preserve BIRD original difficulty values (Simple/Moderate/Challenging) in tags
-- [ ] Create `datasets/bird_mini_dev/views.sql` with tag-based and database-specific views
-- [ ] Add database-specific views (e.g., `v_questions_financial_db`, `v_questions_european_football_db`)
-- [ ] Ensure `v_questions_default` includes all 500 examples
-- [ ] Copy 11 domain databases to databases/ subdirectory
+- [ ] Create database-specific views for 11 domain databases
 - [ ] Integrate evidence field into prompt templates
 - [ ] Test view-based evaluation with large databases (up to 570MB)
 
-#### 15.8 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
-- [ ] **Focus on 24 high-quality instances** with gold SQL (scope limited by data availability)
-- [ ] Build spider2_lite_gold.db with complete available dataset
-- [ ] Create `datasets/spider2_lite/views.sql` (may be minimal due to small dataset)
-- [ ] Ensure `v_questions_default` includes all 24 examples
+#### 15.9 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
+- [ ] Convert Spider2-lite data (24 high-quality instances) to standard format
+- [ ] Use build_dataset.py to create Tier 3 dataset
+- [ ] Create minimal views.sql due to small dataset size
 - [ ] Copy required subset of 30+ databases
 - [ ] Embed external knowledge in metadata JSON field
-- [ ] Validate enterprise-scale query execution
-
-#### 15.9 BIRD LiveSQLBench Integration (Future)
-- [ ] **Most Complex**: 270 examples with external knowledge requirements
-- [ ] Requires CRUD operation support and knowledge base integration
-- [ ] Advanced prompt engineering for management tasks
-- [ ] Deferred to later phase due to complexity
 
 ### Phase 3: Unified Evaluation Engine
 
 #### 15.10 Core Evaluation Script
-- [ ] Create `eval.py` as main evaluation interface
-- [ ] Implement dataset auto-detection and loading
-- [ ] Build unified evaluation loop with database-agnostic logic
+- [ ] Implement three-tier evaluation logic in eval.py
+- [ ] Add automatic tier detection and feature availability
+- [ ] Build unified evaluation loop supporting all tiers
 - [ ] Add rich TUI progress reporting
 
-#### 15.11 Multi-Database Support
-- [ ] **Context-Aware Database Switching**: Automatic target_db selection per question
-- [ ] **Unified Tool Interface**: Same execute_sql interface across all architectures
-- [ ] **Performance Optimization**: Connection pooling for multi-database scenarios
-- [ ] **Error Handling**: Robust handling of complex multi-table query failures
+#### 15.11 Simplified Database Handling
+- [ ] Remove complex database targeting - questions specify database directly
+- [ ] Implement simple connection logic: file vs directory detection
+- [ ] Remove schema scope filtering - show full schema always
+- [ ] Add basic connection pooling for performance
 
-#### 15.12 Schema Scope System
-- [ ] **Dynamic Scope Detection**: Parse gold SQL to identify referenced tables/columns
-- [ ] **Tool Filtering**: list_tables/describe_table respect scope by default
-- [ ] **Optional Full Schema**: --full-schema flag for future enhancement
-- [ ] **Scope Caching**: Cache parsed scopes for performance
+#### 15.12 Prompt System Integration
+- [ ] Load default prompt or custom prompt_template.txt
+- [ ] Remove dataset-specific prompt builders (use templates instead)
+- [ ] Maintain compatibility with existing model adapters
+- [ ] Support prompt overrides only for complex datasets (Spider, BIRD)
 
-### Phase 4: Rich User Experience
+### Phase 4: User Experience and Tooling
 
 #### 15.13 CLI Interface Design
-- [ ] Simple evaluation interface with parameter overrides
-- [ ] Backend auto-detection with manual override capability
+- [ ] Implement three-tier CLI with auto-detection
+- [ ] Add dataset creation and management commands
 - [ ] Progress reporting with rich TUI enhancements
 - [ ] Clear error messaging and debugging support
 
-#### 15.14 Build System Integration
-- [ ] Individual dataset build scripts (not CLI commands)
-- [ ] Makefile integration for dataset building
-- [ ] Automated testing of build outputs
-- [ ] Provenance tracking and reproducibility
+#### 15.14 Dataset Management System
+- [ ] Interactive dataset creation workflow
+- [ ] Dataset upgrade system (Tier 2 → Tier 3)
+- [ ] Validation and testing of dataset integrity
+- [ ] Template system for consistent dataset structure
 
 #### 15.15 Output and Logging
 - [ ] **JSONL Logs**: Streaming output during evaluation with detailed per-item logs and raw responses
@@ -745,17 +830,17 @@ make build-all
 
 ### Phase 5: Testing and Validation
 
-#### 15.16 Single-Database Testing (WikiSQL)
-- [ ] Validate WikiSQL evaluation matches existing implementation
-- [ ] Test schema scope filtering accuracy
-- [ ] Verify tool interface consistency
-- [ ] Benchmark evaluation performance
+#### 15.16 Three-Tier Testing
+- [ ] Test Tier 1: Direct file evaluation with various question formats
+- [ ] Test Tier 2: Dataset template creation and organization
+- [ ] Test Tier 3: Advanced features and upgrade processes
+- [ ] Validate consistent behavior across all tiers
 
-#### 15.17 Multi-Database Testing (Spider1, BIRD)
-- [ ] Test database switching and context management
-- [ ] Validate cross-domain query execution
+#### 15.17 Dataset Integration Testing
+- [ ] Test WikiSQL, Spider1, BIRD conversions and evaluations
+- [ ] Validate cross-database and multi-database scenarios
 - [ ] Test large database performance (BIRD's 570MB databases)
-- [ ] Verify external knowledge integration (BIRD)
+- [ ] Verify upgrade processes work correctly
 
 #### 15.18 Backend Integration Testing
 - [ ] Test LM Studio integration with tool calling
@@ -767,6 +852,7 @@ make build-all
 - [ ] Test SQL parsing and extraction robustness
 - [ ] Validate timeout and resource limit enforcement
 - [ ] Test malformed query handling and recovery
+- [ ] Verify safety constraint enforcement across all tiers
 - [ ] Verify backend failure handling and switching
 
 ---
@@ -1001,7 +1087,122 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 22. Next Steps
+## 22. Side Quest: Javascript Question Builder
+
+### 22.1 Project Overview
+
+**Goal**: Create a pure Javascript + HTML + CSS single file .html page that allows for easy generation of `questions.jsonl` files through a user-friendly interface.
+
+**Purpose**: Simplify the process of creating custom datasets by providing a visual tool for writing questions and SQL statements, eliminating the need to manually format JSONL files and handle multi-line SQL complexities.
+
+### 22.2 Core Features
+
+#### **Question Management Interface**
+- Add/edit/delete questions in a clean UI
+- Multi-line SQL editor with syntax highlighting
+- Auto-formatting and validation of SQL statements
+- Real-time preview of generated JSONL output
+
+#### **Database Integration**
+- File picker UI for selecting .db files from local filesystem
+- Automatic database schema inspection and display
+- Table/column browser for reference while writing SQL
+- Path handling for single vs multi-database modes
+
+#### **SQL Validation and Testing**
+- Client-side SQL syntax validation
+- Optional SQL execution against selected database (via sql.js)
+- Results preview to verify SQL correctness
+- Error highlighting and helpful error messages
+
+#### **Export and Integration**
+- Generate properly formatted questions.jsonl file
+- Download functionality for completed question sets
+- Proper escaping of multi-line SQL and special characters
+- Integration hooks for dataset builder scripts
+
+### 22.3 Technical Implementation
+
+#### **Single File Architecture**
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <!-- CSS: Modern, clean interface with syntax highlighting -->
+    <!-- SQL.js library for client-side SQLite execution -->
+</head>
+<body>
+    <!-- Question builder interface -->
+    <!-- Database browser panel -->
+    <!-- SQL editor with validation -->
+    <!-- Export controls -->
+
+    <script>
+        // Pure Javascript implementation
+        // No external dependencies except sql.js
+        // Local file handling and JSONL generation
+    </script>
+</body>
+</html>
+```
+
+#### **User Workflow**
+1. **Load Database**: Select .db file(s) via file picker
+2. **Browse Schema**: Inspect tables and columns in sidebar
+3. **Write Questions**: Add natural language questions with corresponding SQL
+4. **Validate SQL**: Real-time syntax checking and optional execution
+5. **Preview Output**: See generated JSONL format
+6. **Export**: Download questions.jsonl file ready for evaluation
+
+#### **Dataset Builder Integration**
+```bash
+# Can be invoked during dataset creation process
+python create_dataset.py --interactive-questions
+# Opens question builder tool in browser
+# Saves questions.jsonl directly to dataset directory
+```
+
+### 22.4 Implementation Priorities
+
+#### **Phase 1: Core Editor**
+- [ ] HTML/CSS interface layout
+- [ ] Question list management (add/edit/delete)
+- [ ] Basic SQL text area with multi-line support
+- [ ] JSONL generation and download
+
+#### **Phase 2: Database Integration**
+- [ ] File picker for .db selection
+- [ ] sql.js integration for schema inspection
+- [ ] Table/column browser sidebar
+- [ ] Database path handling for question format
+
+#### **Phase 3: Validation and Testing**
+- [ ] SQL syntax highlighting and validation
+- [ ] Optional SQL execution and results preview
+- [ ] Error handling and user feedback
+- [ ] Real-time JSONL preview
+
+#### **Phase 4: Polish and Integration**
+- [ ] Responsive design and accessibility
+- [ ] Integration with dataset builder scripts
+- [ ] Documentation and usage examples
+- [ ] Testing across different browsers
+
+### 22.5 Benefits
+
+**Developer Experience**: Eliminates manual JSONL formatting and reduces errors in question creation
+
+**Accessibility**: Non-technical users can contribute questions without understanding JSON syntax
+
+**Validation**: Immediate feedback on SQL correctness prevents evaluation failures
+
+**Integration**: Seamless workflow from question creation to dataset building
+
+**Reusability**: Can be used across all dataset types and complexity tiers
+
+---
+
+## 23. Next Steps
 
 1. Implement backend auto-detection system
 2. Create unified tool interface with schema scope filtering
