@@ -1,87 +1,117 @@
-# sqlite-llm-bench — Unified Technical Specification & Implementation Plan (v0.2)
+# sqlite-llm-workbench (v0.3)
 
-> Goal: a SQLite‑specific, local‑model‑friendly benchmark that is reproducible, simple to run via one CLI, and fair across datasets and backends. Tool‑calling is the default; prompt‑only SQL generation is the fallback.
+> **Primary Goal**: Systematically test any LLM's ability to understand natural language and generate working SQL queries, helping you identify exactly where models succeed and fail in real-world data tasks.
 
----
+> **Secondary Goal**: Standardized benchmarking framework for comparing models with reproducible scores across industry-standard datasets.
 
-## 1. Scope & Non‑Goals
+**For developers building**: SQL agents, BI tools, data analysis workflows, or any system that needs reliable natural language → SQL conversion.
 
-**In‑scope**
+**For researchers studying**: LLM capabilities in structured reasoning, tool usage, and domain-specific tasks.
 
-* Convert upstream text‑to‑SQL datasets into SQLite DBs with unified metadata storage.
-* Run evaluations via LiteLLM across openai‑compatible backends (LM Studio, Ollama, OpenRouter).
-* Support both single-database and multi-database datasets as first-class citizens.
-* Leverage SQLite views for flexible dataset subsetting and evaluation targeting.
-* Report execution‑based metrics with deterministic, serial runs.
-
-**Out‑of‑scope**
-
-* Shipping prebuilt `.db` artifacts. (We build locally from pinned sources.)
-* Non‑SQLite engines or custom SQLite extensions.
+**For enthusiasts**: Easy model comparison tools that run on local hardware with common models.
 
 ---
 
-## 2. Architecture Philosophy & Design Rationale
+## 1. Mission & Research Focus
 
-### 2.1 SQLite-First Design Philosophy
+**Core Question**: *How good is this model at using SQLite's features, functions, and advantages for real-world data tasks?*
 
-**Core Principle**: Leverage SQLite's strengths for simplicity, flexibility, and power.
+This workbench exists to **systematically identify weak spots** in language models' SQL capabilities using well-established industry text-to-SQL datasets. Rather than chasing leaderboard positions, we focus on **precise capability assessment** to further research and development of BI/data analyst workflows and agents.
 
-* **Views for Subsetting**: Use SQLite views to enable flexible dataset subsetting without code complexity
-* **Metadata as Data**: Store tags, difficulty, features as queryable data, not configuration
-* **SQL as Interface**: Let users express evaluation criteria in SQL rather than complex CLI flags
-* **Human Inspectable**: All data queryable via standard SQL tools for debugging and analysis
-* **Self-Contained**: No external dependencies - everything in SQLite databases
+**Primary Use Cases**:
+- **Capability Discovery**: Find exactly where your chosen model fails on specific SQL patterns
+- **Production Readiness**: Test models against real-world SQL features before deployment
+- **Research Validation**: Systematic assessment of structured reasoning capabilities
+- **Model Selection**: Data-driven comparison for SQL agent development
 
-### 2.2 Evaluation Pragmatism
+**Secondary Use Cases**:
+- **Standardized Benchmarking**: Reproducible scores across models and datasets
+- **Performance Tracking**: Monitor improvements across model versions
+- **Community Comparison**: Share results with standardized metrics
 
-**Principle**: Clear task definition with acceptance that some models aren't suitable for structured tasks.
+## 2. Core Design Principles
 
-* **Essential task clarification**: Dataset builders may include minimal task clarity needed by ALL models ("Generate a SELECT statement to answer the question")
-* **Uniform standards**: Same clear instructions for every model - no model-specific workarounds
-* **Honest capability assessment**: Models that can't follow explicit, well-structured task instructions are documented as unsuitable for SQL tasks
-* **Task definition boundary**: Clarifications about what to do (task) are permitted; hints about how to do it (SQL reasoning) are not
+### 2.1 SQLite-First Research Philosophy
 
-### 2.3 Views-Based Dataset Architecture
+**Principle**: Leverage SQLite's unique strengths to reveal model capabilities that other engines can't test.
 
-**Philosophy**: Build complete datasets, expose subsets via predefined views.
+* **Real-World Features**: Test JSON operations, window functions, CTEs, and other modern SQL features
+* **Tool Integration**: Models must use `execute_sql` tools, not just generate text
+* **Production Patterns**: Evaluate patterns developers actually encounter in BI/analytics workflows
+* **Human Inspectable**: All evaluation data queryable via standard SQL tools for analysis
+
+### 2.2 Capability Discovery Over Benchmarking
+
+**Principle**: Detailed failure analysis trumps aggregate scores.
+
+* **Granular Tagging**: Automatically tag queries by SQL features, complexity, and patterns
+* **Targeted Testing**: Use SQLite views to test specific capabilities (JOINs, aggregations, subqueries)
+* **Failure Pattern Analysis**: Identify systematic weaknesses rather than just overall accuracy
+* **Model-Agnostic Standards**: Same clear instructions for every model - no special accommodations
+
+### 2.3 Practical Developer Focus
+
+**Principle**: Serve developers building real systems, not just researchers publishing papers.
+
+* **Local-First**: Run on common hardware with local models (LM Studio, Ollama)
+* **Single CLI**: One command to test everything or focus on specific capabilities
+* **Actionable Results**: Clear identification of which SQL patterns work vs. fail
+* **Production Relevance**: Test scenarios developers actually encounter
+
+### 2.4 System Architecture Overview
+
+Three integrated subsystems support both discovery and benchmarking:
+
+1. **Build** – Convert industry datasets into SQLite DBs with rich metadata and capability-focused views
+2. **Test** – Execute targeted evaluations using tools-first approach with prompt fallback
+3. **Analyze** – Generate both detailed failure analysis and standardized benchmark scores
+
+**Views-Based Testing**: Target specific capabilities without code complexity:
 
 ```sql
-CREATE VIEW v_questions_default AS
-  SELECT * FROM questions ORDER BY difficulty_score DESC LIMIT 500;
-
 CREATE VIEW v_questions_joins_only AS
   SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%join%';
 
-CREATE VIEW v_questions_single_table AS
-  SELECT * FROM questions WHERE json_array_length(json_extract(tags, '$')) = 1;
+CREATE VIEW v_questions_aggregation AS
+  SELECT * FROM questions WHERE json_extract(tags, '$') LIKE '%aggregation%';
 ```
 
-**CLI Integration**: Users specify views for targeted evaluation:
+**CLI Integration**: Test specific capabilities or run comprehensive benchmarks:
 ```bash
+# Test specific SQL features
 python eval.py --dataset wikisql --view v_questions_joins_only
-python eval.py --dataset bird_mini_dev --view v_questions_financial_only
+
+# Full benchmark across all datasets
+python eval.py --comprehensive --model "your-model"
 ```
-
-### 2.4 System Overview
-
-A single evaluation script fronts three subsystems:
-
-1. **Build** – dataset-specific scripts fetch, pin, normalize, and assemble complete dataset DBs with predefined views.
-2. **Eval** – execute view-selected items against a selected model/backend (tool‑first; prompt‑fallback).
-3. **Report** – compute metrics and produce summaries from evaluation logs.
-
-**Separation of concerns**
-
-* **Dataset Builders** (per dataset) isolate source quirks, produce *uniform* database schemas, and define evaluation views.
-* **Backend Auto-detection** isolates inference quirks via LiteLLM with fallback chain.
-* **Evaluator** remains small: orchestrates prompts/tools, executes SQL in read‑only SQLite, logs outcomes, and computes metrics.
 
 ---
 
-## 3. Data Architecture
+## 3. Scope & Constraints
 
-### 3.1 Directory Structure
+**In‑scope**
+
+* Convert upstream text‑to‑SQL datasets into SQLite DBs with unified metadata storage
+* Run evaluations via LiteLLM across openai‑compatible backends (LM Studio, Ollama, OpenRouter)
+* Support both single-database and multi-database datasets as first-class citizens
+* Leverage SQLite views for flexible dataset subsetting and capability targeting
+* Report execution‑based metrics with deterministic, serial runs
+* Detailed failure analysis and capability gap identification
+* Standardized benchmarking scores for model comparison
+
+**Out‑of‑scope**
+
+* Shipping prebuilt `.db` artifacts (we build locally from pinned sources)
+* Non‑SQLite engines or custom SQLite extensions
+* Model-specific prompt optimizations or hints
+* Real-time evaluation or streaming inference
+* Multi-turn conversations or query refinement
+
+---
+
+## 4. Data Architecture
+
+### 4.1 Directory Structure
 
 ```
 data/                               # Raw source data (git clones, downloads)
@@ -115,7 +145,7 @@ model_adapters/                    # Model-specific response parsing
 └── utils.py                       # Shared SQL extraction patterns
 ```
 
-### 3.2 Multi-Database Support
+### 4.2 Multi-Database Support
 
 **Core principle**: Each dataset has a "gold" database containing questions/metadata and a `databases/` subdirectory containing source data for tool queries.
 
@@ -130,9 +160,9 @@ model_adapters/                    # Model-specific response parsing
 
 ---
 
-## 4. Database Schema Standards
+## 5. Database Schema Standards
 
-### 4.1 Gold Database Schema
+### 5.1 Gold Database Schema
 
 Every `{dataset}_gold.db` contains:
 
@@ -177,7 +207,7 @@ CREATE TABLE __bench_meta__ (
 );
 ```
 
-### 4.2 Auto-Generated Tags System
+### 5.2 Auto-Generated Tags System
 
 **SQL Analysis Module**: Uniform tag generation across all datasets via `datasets/shared/sql_analyzer.py`:
 
@@ -199,7 +229,7 @@ def generate_tags(gold_sql: str, difficulty: str = None) -> Dict:
 3. Apply predefined views from `datasets/{name}/views.sql` based on dataset-specific characteristics
 4. Always include `v_questions_default` as the canonical evaluation set
 
-### 4.3 Views-Based Subsetting System
+### 5.3 Views-Based Subsetting System
 
 **Evaluation Process**:
 ```bash
@@ -219,11 +249,11 @@ python eval.py --dataset bird_mini_dev --view v_questions_financial_db
 * **Combined**: `v_questions_hard_joins`, `v_questions_single_table_aggregation`
 * **Size**: `v_questions_tiny` (10 examples), `v_questions_small` (50 examples)
 
-### 4.4 Schema Scope (Dynamic)
+### 5.4 Schema Scope (Dynamic)
 
 Schema scope is determined dynamically by parsing `gold_sql` to identify referenced tables and columns. Tools (`list_tables`, `describe_table`) respect this scope by default, showing only relevant schema elements to the model.
 
-### 4.5 Source Database Standards
+### 5.5 Source Database Standards
 
 Databases in `databases/` subdirectory:
 * Must be SQLite format with `.db` extension
@@ -233,9 +263,9 @@ Databases in `databases/` subdirectory:
 
 ---
 
-## 5. Evaluation Pipeline
+## 6. Evaluation Pipeline
 
-### 5.1 Complete Dataset Building with View-Based Subsetting
+### 6.1 Complete Dataset Building with View-Based Subsetting
 
 Each dataset build script creates complete datasets with predefined evaluation views:
 
@@ -259,7 +289,7 @@ python eval.py --dataset wikisql --view v_questions_tiny        # 10 examples fo
 python eval.py --dataset wikisql --view v_questions_joins --limit 5
 ```
 
-### 5.2 Backend Auto-Detection
+### 6.2 Backend Auto-Detection
 
 ```python
 BACKENDS = {
@@ -290,9 +320,9 @@ BACKENDS = {
 
 ---
 
-## 6. Tool Interface Specification
+## 7. Tool Interface Specification
 
-### 6.1 Core Tools
+### 7.1 Core Tools
 
 ```python
 def list_tables() -> List[str]:
@@ -345,7 +375,7 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
     """
 ```
 
-### 6.2 Tool Behavior
+### 7.2 Tool Behavior
 
 **Database targeting**: Tools automatically use the `target_db` from current evaluation item. Models don't specify database explicitly.
 
@@ -355,7 +385,7 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ---
 
-## 7. Runtime & Safety Constraints
+## 8. Runtime & Safety Constraints
 
 * **SQLite engine:** Python stdlib `sqlite3` only (no extension loading). DBs opened `mode=ro`.
 * **Statement gate:** Only `SELECT` allowed. No CTEs with side effects, no PRAGMAs, no ATTACH/DETACH, no triggers, no writes.
@@ -366,15 +396,15 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ---
 
-## 8. Prompting & Tooling
+## 9. Prompting & Tooling
 
-### 8.1 Tool-First Policy
+### 9.1 Tool-First Policy
 
 * **Default mode**: Use tools. Available tools: `list_tables()`, `describe_table()`, `execute_sql()`.
 * **Backends with OpenAI-style tool calling** (LM Studio/Ollama with compatible models) use tools directly.
 * **Schema exposure**: Tools inject minimal schema scope (tables/columns from gold SQL only).
 
-### 8.2 Prompt-Only Fallback
+### 9.2 Prompt-Only Fallback
 
 * **Conditions**: Backend doesn't support tools OR N consecutive tool failures.
 * **Fallback behavior**: Request single SQLite `SELECT` statement as plain text; extract and execute under same safety constraints.
@@ -382,15 +412,15 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ---
 
-## 8.3 Model Adapter Architecture
+### 9.3 Model Adapter Architecture
 
-### 8.3.1 Goal
+#### 9.3.1 Goal
 
 Evaluate each model's SQLite capabilities using optimal prompting for that model, without compromising evaluation validity.
 
 **Core Principle**: All models receive the same information content, but formatted optimally for their architecture.
 
-### 8.3.2 Two-Layer Design
+#### 9.3.2 Two-Layer Design
 
 **Dataset Prompt Builders** (`datasets/{dataset}/prompt_builder.py`):
 - Create information content: table schema, dataset-specific hints, task instructions
@@ -402,7 +432,7 @@ Evaluate each model's SQLite capabilities using optimal prompting for that model
 - Manage tool calling mechanics (OpenAI standard vs Harmony vs prompt-only)
 - **Do not modify prompt content** - only structural formatting and response processing
 
-### 8.3.3 Prompt Content Boundary
+#### 9.3.3 Prompt Content Boundary
 
 **Adjust for data format issues (Permitted)**:
 - Data representation facts: "Column contains comma-formatted numbers stored as TEXT"
@@ -416,22 +446,22 @@ Evaluate each model's SQLite capabilities using optimal prompting for that model
 
 **Test Principle**: Evaluate SQL reasoning ability given clear data information, not prompt engineering skill.
 
-### 8.3.4 Model Grouping
+#### 9.3.4 Model Grouping
 
 Group by response parsing needs, not vendor names:
 - Same adapter for similar response formats (version handling within adapter)
 - Split adapters when parsing logic becomes incompatible
 - Model name parsing determines adapter selection via factory pattern
 
-### 8.3.5 LiteLLM Integration
+#### 9.3.5 LiteLLM Integration
 
 LiteLLM handles communication layer (API calls, provider detection), model adapters handle SQL-specific parsing and formatting.
 
 ---
 
-## 9. CLI Design
+## 10. CLI Design
 
-### 9.1 View-Based Evaluation Interface
+### 10.1 View-Based Evaluation Interface
 
 ```bash
 # Default evaluation (uses v_questions_default view)
@@ -455,7 +485,7 @@ python eval.py --dataset wikisql --view v_questions_joins --limit 5
 python eval.py --dataset spider2_lite --backend openrouter
 ```
 
-### 9.2 Build Scripts with Views Integration
+### 10.2 Build Scripts with Views Integration
 
 Dataset building handled separately via Make or individual scripts:
 
@@ -477,9 +507,9 @@ make build-all
 
 ---
 
-## 10. Metrics & Evaluation
+## 11. Metrics & Evaluation
 
-### 10.1 Primary Metrics
+### 11.1 Primary Metrics
 
 * **Execution Accuracy (EX@1)**: Whether model SQL returns same results as gold SQL.
   - **Comparison**: Order-insensitive set comparison (unless both have ORDER BY)
@@ -490,14 +520,14 @@ make build-all
   - **Normalization**: Whitespace, case, and keyword standardization
   - **Purpose**: Secondary metric for SQL structure analysis
 
-### 10.2 Secondary Metrics
+### 11.2 Secondary Metrics
 
 * **Non-error rate**: Fraction of attempts that parse and execute without exceptions
 * **Latency**: Prompt→first token; total generation time
 * **Feature-stratified EX**: Breakdown by SQL features from `tags` field
 * **Error taxonomy**: Parse errors, blocked statements, timeouts, execution errors
 
-### 10.3 Output Format
+### 11.3 Output Format
 
 * **JSONL logs**: Per-item attempts with raw responses, extracted SQL, results, timings
 * **Summary metrics**: Aggregated results with stratified breakdowns
@@ -505,16 +535,16 @@ make build-all
 
 ---
 
-## 11. Error Handling & Safety
+## 12. Error Handling & Safety
 
-### 11.1 SQL Safety
+### 12.1 SQL Safety
 
 * **Read-only connections**: `mode=ro` prevents any data modification
 * **Statement validation**: Strict parser allowing only SELECT with safe functions
 * **Resource limits**: Enforced LIMIT and timeout guards on all queries
 * **No extensions**: No PRAGMA, ATTACH, or extension loading allowed
 
-### 11.2 Evaluation Robustness
+### 12.2 Evaluation Robustness
 
 * **Parse errors**: Extract first valid SELECT from model response; log parse failures
 * **Execution errors**: Capture SQL errors without stopping evaluation; report error types
@@ -523,9 +553,9 @@ make build-all
 
 ---
 
-## 12. Extensibility
+## 13. Extensibility
 
-### 12.1 Adding Datasets
+### 13.1 Adding Datasets
 
 1. Create dataset builder script in `data/{dataset}/build.py`
 2. Implement conversion to standard database schema
@@ -534,7 +564,7 @@ make build-all
 5. Create `datasets/{dataset}/prompt_builder.py` for dataset-specific prompting logic
 6. Add dataset to evaluation registry
 
-### 12.2 Adding Model Families
+### 13.2 Adding Model Families
 
 1. Determine if new model fits existing response parser (group by response format, not vendor)
 2. If new parsing needed, create `model_adapters/{family}.py` with ResponseParser interface
@@ -542,7 +572,7 @@ make build-all
 4. Test with dataset prompt builders to ensure optimal formatting
 5. Validate prompt content boundary compliance (data format vs SQL reasoning)
 
-### 12.3 Adding Backends
+### 13.3 Adding Backends
 
 1. Add backend configuration to BACKENDS dictionary
 2. Test LiteLLM compatibility and tool support
@@ -551,15 +581,15 @@ make build-all
 
 ---
 
-## 13. Versioning & Reproducibility
+## 14. Versioning & Reproducibility
 
-### 13.1 Dataset Versioning
+### 14.1 Dataset Versioning
 
 * **Builder versioning**: Each dataset builder declares semantic version
 * **Source pinning**: Builders pin exact upstream commits/tags/downloads
 * **Provenance tracking**: `__bench_meta__` table records build environment and sources
 
-### 13.2 Evaluation Reproducibility
+### 14.2 Evaluation Reproducibility
 
 * **Deterministic evaluation**: Serial execution with fixed parameters
 * **Environment logging**: Python/SQLite versions, backend configurations recorded
@@ -567,23 +597,23 @@ make build-all
 
 ---
 
-## 14. Implementation Plan
+## 15. Implementation Plan
 
 ### Phase 1: Core Infrastructure
 
-#### 1.1 Backend Auto-Detection System
+#### 15.1 Backend Auto-Detection System
 - [ ] Implement BACKENDS configuration dictionary
 - [ ] Create backend auto-detection with local-first ordering
 - [ ] Add CLI parameter override support
 - [ ] Test LM Studio, Ollama, OpenRouter integration
 
-#### 1.2 Tool Interface Implementation
+#### 15.2 Tool Interface Implementation
 - [ ] Implement standardized tool signatures
 - [ ] Add automatic database targeting (hidden from models)
 - [ ] Create schema scope filtering system
 - [ ] Build SQL safety validation
 
-#### 1.3 Database-Only Metadata System
+#### 15.3 Database-Only Metadata System
 - [ ] Create unified database schema standards
 - [ ] Implement dynamic schema scope detection from gold SQL
 - [ ] Build database loading and validation utilities
@@ -591,7 +621,7 @@ make build-all
 
 ### Phase 2: Dataset Integration
 
-#### 2.1 WikiSQL Complete Dataset Building (High Priority)
+#### 15.4 WikiSQL Complete Dataset Building (High Priority)
 - [ ] Build complete WikiSQL dataset (~80K examples) with new schema standards
 - [ ] Implement shared SQL analyzer for auto-generated tags
 - [ ] Create `datasets/wikisql/views.sql` with tag-based predefined evaluation views
@@ -601,7 +631,7 @@ make build-all
 - [ ] Test view-based evaluation system
 - [ ] Validate metrics match existing 500-example implementation
 
-#### 2.2 Spider1 Complete Dataset Integration (Ready for Implementation)
+#### 15.5 Spider1 Complete Dataset Integration (Ready for Implementation)
 - [ ] **Complete Dataset Available**: 1,034 dev examples with 100% gold SQL coverage
 - [ ] Build spider1_gold.db with complete questions table and auto-generated tags
 - [ ] Preserve Spider1 original difficulty values (Easy/Medium/Hard/Extra Hard) in tags
@@ -618,7 +648,7 @@ make build-all
 - Established benchmark with difficulty classifications
 - ~1000 examples for comprehensive evaluation with flexible subsetting
 
-#### 2.3 BIRD mini_dev Complete Integration (High Quality)
+#### 15.6 BIRD mini_dev Complete Integration (High Quality)
 - [ ] **Native SQLite**: 500 examples, 11 databases, no conversion needed
 - [ ] Build bird_mini_dev_gold.db with complete dataset, evidence field support, and auto-generated tags
 - [ ] Preserve BIRD original difficulty values (Simple/Moderate/Challenging) in tags
@@ -629,7 +659,7 @@ make build-all
 - [ ] Integrate evidence field into prompt templates
 - [ ] Test view-based evaluation with large databases (up to 570MB)
 
-#### 2.4 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
+#### 15.7 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
 - [ ] **Focus on 24 high-quality instances** with gold SQL (scope limited by data availability)
 - [ ] Build spider2_lite_gold.db with complete available dataset
 - [ ] Create `datasets/spider2_lite/views.sql` (may be minimal due to small dataset)
@@ -638,7 +668,7 @@ make build-all
 - [ ] Embed external knowledge in metadata JSON field
 - [ ] Validate enterprise-scale query execution
 
-#### 2.5 BIRD LiveSQLBench Integration (Future)
+#### 15.8 BIRD LiveSQLBench Integration (Future)
 - [ ] **Most Complex**: 270 examples with external knowledge requirements
 - [ ] Requires CRUD operation support and knowledge base integration
 - [ ] Advanced prompt engineering for management tasks
@@ -646,19 +676,19 @@ make build-all
 
 ### Phase 3: Unified Evaluation Engine
 
-#### 3.1 Core Evaluation Script
+#### 15.9 Core Evaluation Script
 - [ ] Create `eval.py` as main evaluation interface
 - [ ] Implement dataset auto-detection and loading
 - [ ] Build unified evaluation loop with database-agnostic logic
 - [ ] Add rich TUI progress reporting
 
-#### 3.2 Multi-Database Support
+#### 15.10 Multi-Database Support
 - [ ] **Context-Aware Database Switching**: Automatic target_db selection per question
 - [ ] **Unified Tool Interface**: Same execute_sql interface across all architectures
 - [ ] **Performance Optimization**: Connection pooling for multi-database scenarios
 - [ ] **Error Handling**: Robust handling of complex multi-table query failures
 
-#### 3.3 Schema Scope System
+#### 15.11 Schema Scope System
 - [ ] **Dynamic Scope Detection**: Parse gold SQL to identify referenced tables/columns
 - [ ] **Tool Filtering**: list_tables/describe_table respect scope by default
 - [ ] **Optional Full Schema**: --full-schema flag for future enhancement
@@ -666,19 +696,19 @@ make build-all
 
 ### Phase 4: Rich User Experience
 
-#### 4.1 CLI Interface Design
+#### 15.12 CLI Interface Design
 - [ ] Simple evaluation interface with parameter overrides
 - [ ] Backend auto-detection with manual override capability
 - [ ] Progress reporting with rich TUI enhancements
 - [ ] Clear error messaging and debugging support
 
-#### 4.2 Build System Integration
+#### 15.13 Build System Integration
 - [ ] Individual dataset build scripts (not CLI commands)
 - [ ] Makefile integration for dataset building
 - [ ] Automated testing of build outputs
 - [ ] Provenance tracking and reproducibility
 
-#### 4.3 Output and Logging
+#### 15.14 Output and Logging
 - [ ] **JSONL Logs**: Detailed per-item logs with raw responses and extracted SQL
 - [ ] **Summary Metrics**: EX/EM rates with feature stratification
 - [ ] **Human-Readable Reports**: Quick analysis and debugging information
@@ -686,25 +716,25 @@ make build-all
 
 ### Phase 5: Testing and Validation
 
-#### 5.1 Single-Database Testing (WikiSQL)
+#### 15.15 Single-Database Testing (WikiSQL)
 - [ ] Validate WikiSQL evaluation matches existing implementation
 - [ ] Test schema scope filtering accuracy
 - [ ] Verify tool interface consistency
 - [ ] Benchmark evaluation performance
 
-#### 5.2 Multi-Database Testing (Spider1, BIRD)
+#### 15.16 Multi-Database Testing (Spider1, BIRD)
 - [ ] Test database switching and context management
 - [ ] Validate cross-domain query execution
 - [ ] Test large database performance (BIRD's 570MB databases)
 - [ ] Verify external knowledge integration (BIRD)
 
-#### 5.3 Backend Integration Testing
+#### 15.17 Backend Integration Testing
 - [ ] Test LM Studio integration with tool calling
 - [ ] Validate Ollama compatibility and performance
 - [ ] Test OpenRouter integration with API key handling
 - [ ] Verify auto-detection fallback chain
 
-#### 5.4 Error Handling and Edge Cases
+#### 15.18 Error Handling and Edge Cases
 - [ ] Test SQL parsing and extraction robustness
 - [ ] Validate timeout and resource limit enforcement
 - [ ] Test malformed query handling and recovery
@@ -712,9 +742,9 @@ make build-all
 
 ---
 
-## 15. Technical Implementation Details
+## 16. Technical Implementation Details
 
-### 15.1 SQL Analyzer Module
+### 16.1 SQL Analyzer Module
 
 **Location**: `datasets/shared/sql_analyzer.py`
 
@@ -776,7 +806,7 @@ tags = generate_tags(question['gold_sql'], question.get('difficulty'))
 # Returns: {"sql": ["aggregation"], "complexity": ["single_table"], "difficulty": "hard"}
 ```
 
-### 15.2 Multi-Database Context Management
+### 16.2 Multi-Database Context Management
 
 ```python
 def get_database_context(item_id: str, dataset: str) -> Dict[str, Any]:
@@ -798,7 +828,7 @@ def get_database_context(item_id: str, dataset: str) -> Dict[str, Any]:
     }
 ```
 
-### 15.3 Schema Scope Detection
+### 16.3 Schema Scope Detection
 
 ```python
 def extract_schema_scope(gold_sql: str) -> Dict[str, List[str]]:
@@ -809,7 +839,7 @@ def extract_schema_scope(gold_sql: str) -> Dict[str, List[str]]:
     pass
 ```
 
-### 15.4 Tool Interface with Auto-Targeting
+### 16.4 Tool Interface with Auto-Targeting
 
 ```python
 def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, Any]:
@@ -834,30 +864,30 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 16. Dataset-Specific Implementation Notes
+## 17. Dataset-Specific Implementation Notes
 
-### 16.1 WikiSQL Implementation
+### 17.1 WikiSQL Implementation
 - **Architecture**: Complete dataset (~80K) in gold.db, data in databases/wikisql_tables.db
 - **Views Strategy**: Default view selects canonical 500 examples; additional views for features/subsets
 - **Tool Use**: Simple single-database targeting
 - **Performance**: Full dataset enables flexible evaluation; default view maintains speed
 - **Migration**: Expand from 500 to complete dataset with view-based canonical subset
 
-### 16.2 Spider1 Implementation
+### 17.2 Spider1 Implementation
 - **Architecture**: Complete dev set (~1K) in gold.db, 20 domain databases in databases/
 - **Views Strategy**: Default view includes all examples; database-specific views enable targeted evaluation
 - **Scale**: ~1000 examples across all domains with flexible database/difficulty subsetting
 - **Tool Use**: Context-aware database targeting per question
 - **Advantage**: Complete gold SQL coverage + database-specific evaluation capabilities
 
-### 16.3 BIRD mini_dev Implementation
+### 17.3 BIRD mini_dev Implementation
 - **Architecture**: Complete dataset (500) in gold.db, 11 domain databases in databases/
 - **Views Strategy**: Default view includes all examples; database-specific views for targeted evaluation
 - **Scale**: 500 examples with evidence field integration and database subsetting
 - **Tool Use**: Context-aware targeting with large database optimization
 - **Features**: Evidence field in metadata JSON, database-specific views, handles databases up to 570MB
 
-### 16.4 Spider2-lite Implementation
+### 17.4 Spider2-lite Implementation
 - **Architecture**: Complete available dataset (24) in gold.db, subset of 30+ databases as needed
 - **Views Strategy**: Minimal views due to small dataset size; default view includes all examples
 - **Scale**: 24 high-quality examples (all available with gold SQL)
@@ -866,9 +896,9 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 17. Success Criteria
+## 18. Success Criteria
 
-### 17.1 Functional Requirements
+### 18.1 Functional Requirements
 - [ ] **Unified Evaluation**: Single script works across all dataset architectures
 - [ ] **Database-Only Metadata**: No external JSONL or CSV file dependencies
 - [ ] **Multi-Database Support**: Seamless handling of both single and multi-database datasets
@@ -876,13 +906,13 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 - [ ] **Schema Scope Filtering**: Dynamic schema filtering based on gold SQL analysis
 - [ ] **Tool Interface Consistency**: Same tool signatures work across all datasets
 
-### 17.2 Performance Requirements
+### 18.2 Performance Requirements
 - [ ] **WikiSQL**: Maintain existing evaluation speed and accuracy
 - [ ] **Spider1**: Handle 1000+ examples with 20-database switching efficiently
 - [ ] **BIRD**: Handle large databases (570MB) without performance degradation
 - [ ] **Spider2-lite**: Process 24 complex enterprise queries reliably
 
-### 17.3 Integration Requirements
+### 18.3 Integration Requirements
 - [ ] **CLI Simplicity**: Single command interface with parameter overrides
 - [ ] **Build System**: Clean separation of build scripts from evaluation
 - [ ] **Error Handling**: Robust handling of SQL errors, timeouts, and backend failures
@@ -891,21 +921,21 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 18. Risk Mitigation
+## 19. Risk Mitigation
 
-### 18.1 Technical Complexity Risks
+### 19.1 Technical Complexity Risks
 - **Multi-Database Architecture**: Start with WikiSQL single-database, then expand
 - **Schema Scope Detection**: Begin with simple parsing, enhance iteratively
 - **Backend Integration**: Test each backend individually before auto-detection
 - **Performance**: Profile large database operations early
 
-### 18.2 Dataset Integration Risks
+### 19.2 Dataset Integration Risks
 - **WikiSQL Migration**: Validate metrics match existing implementation exactly
 - **Spider1 Scale**: Test database switching performance with subset first
 - **BIRD Complexity**: Start with mini_dev before attempting LiveSQLBench
 - **External Dependencies**: Eliminate CSV/JSONL dependencies systematically
 
-### 18.3 User Experience Risks
+### 19.3 User Experience Risks
 - **CLI Complexity**: Keep interface simple, add features incrementally
 - **Error Messages**: Provide clear debugging information for common failures
 - **Backend Detection**: Ensure fallback chain works reliably across environments
@@ -913,9 +943,9 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 19. Current Implementation Status
+## 20. Current Implementation Status
 
-### 19.1 Supported Datasets
+### 20.1 Supported Datasets
 
 * **WikiSQL**: 500 curated examples, single-database architecture
 * **Spider1**: ~1000 examples, multi-database architecture (20 domains)
@@ -923,7 +953,7 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 * **Spider2-lite**: 24 high-quality examples, multi-database architecture
 * **BIRD LiveSQLBench**: 270 examples, multi-database with external knowledge
 
-### 19.2 Supported Backends
+### 20.2 Supported Backends
 
 * **LM Studio**: Local OpenAI-compatible server
 * **Ollama**: Local model serving
@@ -931,7 +961,7 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 20. Glossary
+## 21. Glossary
 
 * **Gold database**: `{dataset}_gold.db` containing questions, gold SQL, and metadata
 * **Target database**: Specific database file in `databases/` subdirectory for current question
@@ -942,7 +972,7 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 21. Next Steps
+## 22. Next Steps
 
 1. Implement backend auto-detection system
 2. Create unified tool interface with schema scope filtering
