@@ -33,7 +33,16 @@
 * **Human Inspectable**: All data queryable via standard SQL tools for debugging and analysis
 * **Self-Contained**: No external dependencies - everything in SQLite databases
 
-### 2.2 Views-Based Dataset Architecture
+### 2.2 Evaluation Pragmatism
+
+**Principle**: Clear task definition with acceptance that some models aren't suitable for structured tasks.
+
+* **Essential task clarification**: Dataset builders may include minimal task clarity needed by ALL models ("Generate a SELECT statement to answer the question")
+* **Uniform standards**: Same clear instructions for every model - no model-specific workarounds
+* **Honest capability assessment**: Models that can't follow explicit, well-structured task instructions are documented as unsuitable for SQL tasks
+* **Task definition boundary**: Clarifications about what to do (task) are permitted; hints about how to do it (SQL reasoning) are not
+
+### 2.3 Views-Based Dataset Architecture
 
 **Philosophy**: Build complete datasets, expose subsets via predefined views.
 
@@ -54,7 +63,7 @@ python eval.py --dataset wikisql --view v_questions_joins_only
 python eval.py --dataset bird_mini_dev --view v_questions_financial_only
 ```
 
-### 2.3 System Overview
+### 2.4 System Overview
 
 A single evaluation script fronts three subsystems:
 
@@ -388,9 +397,10 @@ Evaluate each model's SQLite capabilities using optimal prompting for that model
 - Handle data format clarifications (WikiSQL comma-formatted TEXT columns)
 
 **Model Response Adapters** (`model_adapters/{family}.py`):
-- Format content into optimal message structure for each model family
+- Format content into optimal message structure for each model family (roles, message order)
 - Handle model-specific response parsing and SQL extraction
 - Manage tool calling mechanics (OpenAI standard vs Harmony vs prompt-only)
+- **Do not modify prompt content** - only structural formatting and response processing
 
 ### 8.3.3 Prompt Content Boundary
 
