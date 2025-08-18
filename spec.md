@@ -49,6 +49,21 @@ This workbench exists to **systematically identify weak spots** in language mode
 * **Failure Pattern Analysis**: Identify systematic weaknesses rather than just overall accuracy
 * **Model-Agnostic Standards**: Same clear instructions for every model - no special accommodations
 
+### 2.3 Evidence-Based Design from Leading Evaluations
+
+**Principle**: Learn from proven evaluation frameworks while maintaining our broader mission.
+
+Drawing from OpenAI's [gpt-oss evaluation approach](https://cookbook.openai.com/articles/gpt-oss/verifying-implementations) and [Simon Willison's implementation experience](https://til.simonwillison.net/llms/gpt-oss-evals), we adopt:
+
+* **Two-Tier Testing**: Quick smoke tests for immediate feedback + comprehensive evaluations
+* **Rich Output Formats**: HTML reports, detailed JSON, and summary statistics for actionable insights
+* **Radical Simplicity**: Individual evaluation scripts should be ~100 lines, focused and debuggable
+* **Backend Agnostic**: Work with any LLM provider through standardized interfaces (via LiteLLM)
+* **Core Metrics Focus**: Start with execution accuracy (EX) and add secondary metrics incrementally
+* **Reproducible Results**: Clear dependency management and deterministic evaluation conditions
+
+**Key Insight**: *Simplicity and focus trump architectural elegance in evaluation systems* - but our multi-model mission requires abstraction layers that single-model evals don't need.
+
 ### 2.3 Practical Developer Focus
 
 **Principle**: Serve developers building real systems, not just researchers publishing papers.
@@ -619,9 +634,21 @@ make build-all
 - [ ] Build database loading and validation utilities
 - [ ] Add provenance tracking in __bench_meta__ tables
 
+#### 15.4 Hello-World Integration Dataset
+- [ ] Build `hello-world` dataset with synthetic data (customers, orders, products tables)
+- [ ] Create 10 examples covering 5 SQL features (2 examples each):
+  - **Absolute Basics**: `SELECT *` and `SELECT columns`
+  - **Basic Filtering**: `WHERE` conditions
+  - **Table Joins**: `INNER/LEFT JOIN`
+  - **Aggregation**: `GROUP BY` with `COUNT/SUM/AVG`
+  - **Sorting & Limiting**: `ORDER BY` with `LIMIT`
+- [ ] Add sample views demonstrating view-based subsetting patterns
+- [ ] Ensure build script is simple and educational for users creating custom datasets
+- [ ] Ships with project as integration test and learning example
+
 ### Phase 2: Dataset Integration
 
-#### 15.4 WikiSQL Complete Dataset Building (High Priority)
+#### 15.5 WikiSQL Complete Dataset Building (High Priority)
 - [ ] Build complete WikiSQL dataset (~80K examples) with new schema standards
 - [ ] Implement shared SQL analyzer for auto-generated tags
 - [ ] Create `datasets/wikisql/views.sql` with tag-based predefined evaluation views
@@ -631,7 +658,7 @@ make build-all
 - [ ] Test view-based evaluation system
 - [ ] Validate metrics match existing 500-example implementation
 
-#### 15.5 Spider1 Complete Dataset Integration (Ready for Implementation)
+#### 15.6 Spider1 Complete Dataset Integration (Ready for Implementation)
 - [ ] **Complete Dataset Available**: 1,034 dev examples with 100% gold SQL coverage
 - [ ] Build spider1_gold.db with complete questions table and auto-generated tags
 - [ ] Preserve Spider1 original difficulty values (Easy/Medium/Hard/Extra Hard) in tags
@@ -648,7 +675,7 @@ make build-all
 - Established benchmark with difficulty classifications
 - ~1000 examples for comprehensive evaluation with flexible subsetting
 
-#### 15.6 BIRD mini_dev Complete Integration (High Quality)
+#### 15.7 BIRD mini_dev Complete Integration (High Quality)
 - [ ] **Native SQLite**: 500 examples, 11 databases, no conversion needed
 - [ ] Build bird_mini_dev_gold.db with complete dataset, evidence field support, and auto-generated tags
 - [ ] Preserve BIRD original difficulty values (Simple/Moderate/Challenging) in tags
@@ -659,7 +686,7 @@ make build-all
 - [ ] Integrate evidence field into prompt templates
 - [ ] Test view-based evaluation with large databases (up to 570MB)
 
-#### 15.7 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
+#### 15.8 Spider2-lite Complete Integration (Limited by Gold SQL Availability)
 - [ ] **Focus on 24 high-quality instances** with gold SQL (scope limited by data availability)
 - [ ] Build spider2_lite_gold.db with complete available dataset
 - [ ] Create `datasets/spider2_lite/views.sql` (may be minimal due to small dataset)
@@ -668,7 +695,7 @@ make build-all
 - [ ] Embed external knowledge in metadata JSON field
 - [ ] Validate enterprise-scale query execution
 
-#### 15.8 BIRD LiveSQLBench Integration (Future)
+#### 15.9 BIRD LiveSQLBench Integration (Future)
 - [ ] **Most Complex**: 270 examples with external knowledge requirements
 - [ ] Requires CRUD operation support and knowledge base integration
 - [ ] Advanced prompt engineering for management tasks
@@ -676,19 +703,19 @@ make build-all
 
 ### Phase 3: Unified Evaluation Engine
 
-#### 15.9 Core Evaluation Script
+#### 15.10 Core Evaluation Script
 - [ ] Create `eval.py` as main evaluation interface
 - [ ] Implement dataset auto-detection and loading
 - [ ] Build unified evaluation loop with database-agnostic logic
 - [ ] Add rich TUI progress reporting
 
-#### 15.10 Multi-Database Support
+#### 15.11 Multi-Database Support
 - [ ] **Context-Aware Database Switching**: Automatic target_db selection per question
 - [ ] **Unified Tool Interface**: Same execute_sql interface across all architectures
 - [ ] **Performance Optimization**: Connection pooling for multi-database scenarios
 - [ ] **Error Handling**: Robust handling of complex multi-table query failures
 
-#### 15.11 Schema Scope System
+#### 15.12 Schema Scope System
 - [ ] **Dynamic Scope Detection**: Parse gold SQL to identify referenced tables/columns
 - [ ] **Tool Filtering**: list_tables/describe_table respect scope by default
 - [ ] **Optional Full Schema**: --full-schema flag for future enhancement
@@ -696,19 +723,19 @@ make build-all
 
 ### Phase 4: Rich User Experience
 
-#### 15.12 CLI Interface Design
+#### 15.13 CLI Interface Design
 - [ ] Simple evaluation interface with parameter overrides
 - [ ] Backend auto-detection with manual override capability
 - [ ] Progress reporting with rich TUI enhancements
 - [ ] Clear error messaging and debugging support
 
-#### 15.13 Build System Integration
+#### 15.14 Build System Integration
 - [ ] Individual dataset build scripts (not CLI commands)
 - [ ] Makefile integration for dataset building
 - [ ] Automated testing of build outputs
 - [ ] Provenance tracking and reproducibility
 
-#### 15.14 Output and Logging
+#### 15.15 Output and Logging
 - [ ] **JSONL Logs**: Detailed per-item logs with raw responses and extracted SQL
 - [ ] **Summary Metrics**: EX/EM rates with feature stratification
 - [ ] **Human-Readable Reports**: Quick analysis and debugging information
@@ -716,25 +743,25 @@ make build-all
 
 ### Phase 5: Testing and Validation
 
-#### 15.15 Single-Database Testing (WikiSQL)
+#### 15.16 Single-Database Testing (WikiSQL)
 - [ ] Validate WikiSQL evaluation matches existing implementation
 - [ ] Test schema scope filtering accuracy
 - [ ] Verify tool interface consistency
 - [ ] Benchmark evaluation performance
 
-#### 15.16 Multi-Database Testing (Spider1, BIRD)
+#### 15.17 Multi-Database Testing (Spider1, BIRD)
 - [ ] Test database switching and context management
 - [ ] Validate cross-domain query execution
 - [ ] Test large database performance (BIRD's 570MB databases)
 - [ ] Verify external knowledge integration (BIRD)
 
-#### 15.17 Backend Integration Testing
+#### 15.18 Backend Integration Testing
 - [ ] Test LM Studio integration with tool calling
 - [ ] Validate Ollama compatibility and performance
 - [ ] Test OpenRouter integration with API key handling
 - [ ] Verify auto-detection fallback chain
 
-#### 15.18 Error Handling and Edge Cases
+#### 15.19 Error Handling and Edge Cases
 - [ ] Test SQL parsing and extraction robustness
 - [ ] Validate timeout and resource limit enforcement
 - [ ] Test malformed query handling and recovery
