@@ -128,15 +128,26 @@ CREATE TABLE questions (
     target_db TEXT NOT NULL,          -- Filename in databases/ subdirectory
     question TEXT NOT NULL,
     gold_sql TEXT NOT NULL,
-    difficulty TEXT,                  -- Simple/moderate/challenging, etc.
-    tags JSON,                        -- SQL features: ["join", "aggregation"]
-    metadata JSON                     -- Dataset-specific fields
+    tags JSON,                        -- Auto-generated: {"sql": ["join"], "complexity": ["multi_table"], "difficulty": "hard"}
+    dataset_metadata JSON            -- Dataset-specific fields
 );
 
 -- Predefined evaluation views (always include v_questions_default)
--- Note: Specific view definitions depend on available metadata per dataset
-CREATE VIEW v_questions_default AS
+CREATE VIEW v_questions_default AS 
   SELECT * FROM questions LIMIT 500;  -- Example - actual logic varies per dataset
+
+-- Example auto-generated tag-based views
+CREATE VIEW v_questions_joins AS 
+  SELECT * FROM questions WHERE json_extract(tags, '$.sql') LIKE '%"join"%';
+
+CREATE VIEW v_questions_aggregation AS 
+  SELECT * FROM questions WHERE json_extract(tags, '$.sql') LIKE '%"aggregation"%';
+
+CREATE VIEW v_questions_single_table AS 
+  SELECT * FROM questions WHERE json_extract(tags, '$.complexity') LIKE '%"single_table"%';
+
+CREATE VIEW v_questions_hard AS 
+  SELECT * FROM questions WHERE json_extract(tags, '$.difficulty') = 'hard';
 
 -- Provenance and versioning
 CREATE TABLE __bench_meta__ (
@@ -151,12 +162,29 @@ CREATE TABLE __bench_meta__ (
 );
 ```
 
-### 4.2 Views-Based Subsetting System
+### 4.2 Auto-Generated Tags System
 
-**Build Process**: Dataset builders create complete databases then apply `views.sql`:
+**SQL Analysis Module**: Uniform tag generation across all datasets via `datasets/shared/sql_analyzer.py`:
+
+```python
+def generate_tags(gold_sql: str, difficulty: str = None) -> Dict:
+    """Generate standardized tags from SQL analysis"""
+    tags = {
+        "sql": _detect_sql_features(gold_sql),        # ["join", "aggregation", "subquery"]
+        "complexity": _detect_complexity(gold_sql),   # ["single_table", "multi_table"] 
+    }
+    if difficulty:
+        tags["difficulty"] = difficulty              # Original dataset difficulty preserved
+    return tags
+```
+
+**Build Process**: Dataset builders create complete databases with auto-generated tags:
 1. Populate full `questions` table with all available examples
-2. Apply predefined views from `datasets/{name}/views.sql`
-3. Always include `v_questions_default` as the canonical evaluation set
+2. Generate tags for each question using shared SQL analyzer (preserving original difficulty)
+3. Apply predefined views from `datasets/{name}/views.sql` based on dataset-specific characteristics
+4. Always include `v_questions_default` as the canonical evaluation set
+
+### 4.3 Views-Based Subsetting System
 
 **Evaluation Process**:
 ```bash
@@ -169,16 +197,18 @@ python eval.py --dataset bird_mini_dev --view v_questions_financial_db
 ```
 
 **View Examples by Use Case**:
-* **Difficulty**: `v_questions_easy`, `v_questions_hard`
+* **Difficulty**: `v_questions_easy`, `v_questions_hard` (using original dataset difficulty values)
 * **SQL Features**: `v_questions_joins`, `v_questions_aggregation`, `v_questions_subquery`
-* **Database-Specific**: `v_questions_financial_db`, `v_questions_sports_db` (target specific source databases)
+* **Complexity**: `v_questions_single_table`, `v_questions_multi_table`
+* **Database-Specific**: `v_questions_financial_db`, `v_questions_concert_singer_db` (target specific source databases)
+* **Combined**: `v_questions_hard_joins`, `v_questions_single_table_aggregation`
 * **Size**: `v_questions_tiny` (10 examples), `v_questions_small` (50 examples)
 
-### 4.3 Schema Scope (Dynamic)
+### 4.4 Schema Scope (Dynamic)
 
 Schema scope is determined dynamically by parsing `gold_sql` to identify referenced tables and columns. Tools (`list_tables`, `describe_table`) respect this scope by default, showing only relevant schema elements to the model.
 
-### 4.4 Source Database Standards
+### 4.5 Source Database Standards
 
 Databases in `databases/` subdirectory:
 * Must be SQLite format with `.db` extension
@@ -492,16 +522,19 @@ make build-all
 
 #### 2.1 WikiSQL Complete Dataset Building (High Priority)
 - [ ] Build complete WikiSQL dataset (~80K examples) with new schema standards
-- [ ] Create `datasets/wikisql/views.sql` with predefined evaluation views
+- [ ] Implement shared SQL analyzer for auto-generated tags
+- [ ] Create `datasets/wikisql/views.sql` with tag-based predefined evaluation views
 - [ ] Ensure `v_questions_default` selects canonical 500 examples
+- [ ] Preserve existing WikiSQL difficulty classification in tags (if available)
 - [ ] Move data tables to databases/wikisql_tables.db
 - [ ] Test view-based evaluation system
 - [ ] Validate metrics match existing 500-example implementation
 
 #### 2.2 Spider1 Complete Dataset Integration (Ready for Implementation)
 - [ ] **Complete Dataset Available**: 1,034 dev examples with 100% gold SQL coverage
-- [ ] Build spider1_gold.db with complete questions table
-- [ ] Create `datasets/spider1/views.sql` with database-specific and difficulty-based views
+- [ ] Build spider1_gold.db with complete questions table and auto-generated tags
+- [ ] Preserve Spider1 original difficulty values (Easy/Medium/Hard/Extra Hard) in tags
+- [ ] Create `datasets/spider1/views.sql` with tag-based and database-specific views
 - [ ] Ensure `v_questions_default` includes all dev examples
 - [ ] Add database-specific views (e.g., `v_questions_concert_singer_db`, `v_questions_car_db`)
 - [ ] Copy 20 domain databases to databases/ subdirectory
@@ -516,8 +549,9 @@ make build-all
 
 #### 2.3 BIRD mini_dev Complete Integration (High Quality)
 - [ ] **Native SQLite**: 500 examples, 11 databases, no conversion needed
-- [ ] Build bird_mini_dev_gold.db with complete dataset and evidence field support
-- [ ] Create `datasets/bird_mini_dev/views.sql` with database-specific views
+- [ ] Build bird_mini_dev_gold.db with complete dataset, evidence field support, and auto-generated tags
+- [ ] Preserve BIRD original difficulty values (Simple/Moderate/Challenging) in tags
+- [ ] Create `datasets/bird_mini_dev/views.sql` with tag-based and database-specific views
 - [ ] Add database-specific views (e.g., `v_questions_financial_db`, `v_questions_european_football_db`)
 - [ ] Ensure `v_questions_default` includes all 500 examples
 - [ ] Copy 11 domain databases to databases/ subdirectory
@@ -609,7 +643,69 @@ make build-all
 
 ## 15. Technical Implementation Details
 
-### 15.1 Multi-Database Context Management
+### 15.1 SQL Analyzer Module
+
+**Location**: `datasets/shared/sql_analyzer.py`
+
+```python
+import re
+import json
+from typing import Dict, List
+
+def generate_tags(gold_sql: str, difficulty: str = None) -> Dict:
+    """Generate standardized tags from SQL analysis"""
+    tags = {
+        "sql": _detect_sql_features(gold_sql),
+        "complexity": _detect_complexity(gold_sql)
+    }
+    if difficulty:
+        tags["difficulty"] = difficulty
+    return tags
+
+def _detect_sql_features(sql: str) -> List[str]:
+    """Detect basic SQL features"""
+    sql_upper = sql.upper()
+    features = []
+    
+    if "JOIN" in sql_upper:
+        features.append("join")
+    if any(agg in sql_upper for agg in ["COUNT(", "SUM(", "AVG(", "MAX(", "MIN("]):
+        features.append("aggregation")
+    if "GROUP BY" in sql_upper:
+        features.append("group_by")
+    if "ORDER BY" in sql_upper:
+        features.append("order_by")
+    if "(" in sql_upper and "SELECT" in sql_upper[sql_upper.find("("):]:
+        features.append("subquery")
+        
+    return features
+
+def _detect_complexity(sql: str) -> List[str]:
+    """Detect basic complexity patterns"""
+    sql_upper = sql.upper()
+    complexity = []
+    
+    # Simple table count
+    table_indicators = sql_upper.count("FROM") + sql_upper.count("JOIN")
+    if table_indicators <= 1:
+        complexity.append("single_table")
+    else:
+        complexity.append("multi_table")
+        
+    return complexity
+
+
+```
+
+**Usage in Build Scripts**:
+```python
+from datasets.shared.sql_analyzer import generate_tags
+
+tags = generate_tags(question['gold_sql'], question.get('difficulty'))
+# Returns: {"sql": ["aggregation"], "complexity": ["single_table"], "difficulty": "hard"}
+```
+
+### 15.2 Multi-Database Context Management
 
 ```python
 def get_database_context(item_id: str, dataset: str) -> Dict[str, Any]:
@@ -631,7 +727,7 @@ def get_database_context(item_id: str, dataset: str) -> Dict[str, Any]:
     }
 ```
 
-### 15.2 Schema Scope Detection
+### 15.3 Schema Scope Detection
 
 ```python
 def extract_schema_scope(gold_sql: str) -> Dict[str, List[str]]:
@@ -642,7 +738,7 @@ def extract_schema_scope(gold_sql: str) -> Dict[str, List[str]]:
     pass
 ```
 
-### 15.3 Tool Interface with Auto-Targeting
+### 15.4 Tool Interface with Auto-Targeting
 
 ```python
 def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, Any]:
