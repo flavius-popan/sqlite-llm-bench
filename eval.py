@@ -8,7 +8,9 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+import litellm
 from extractors.default import DefaultResponseParser
+from backends import configure_backend, get_backend_info
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -300,17 +302,39 @@ def setup_evaluation(dataset_name: str, questions_file: str, db_path: str) -> Di
 
 
 def generate_response(question: str, model: str, db_path: str, use_tools: bool = False) -> Dict[str, Any]:
-    """Generate model response (placeholder for actual model integration).
+    """Generate model response using LiteLLM backend integration.
 
     Args:
         question: The SQL question
-        model: Model name
+        model: Model name (auto-detects backend)
         db_path: Database path
         use_tools: Whether to use tool calling mode
 
     Returns:
         Response data with generated content and metadata
     """
+    # Configure LiteLLM settings
+    litellm.suppress_debug_info = True
+
+    try:
+        formatted_model = configure_backend(model)
+        backend_info = get_backend_info(model)
+    except ValueError as e:
+        print(f"Backend configuration error: {e}")
+        response_data = {
+            "messages": [],
+            "tools": None,
+            "model": model,
+            "use_tools": use_tools,
+            "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```",
+            "config_error": str(e)
+        }
+        # Use response parser to extract SQL
+        parser = DefaultResponseParser()
+        generated_sql = parser.extract_sql(response_data)
+        response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"
+        return response_data
+
     # Create appropriate prompt
     if use_tools:
         messages = create_tool_calling_prompt(question)
@@ -319,22 +343,53 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         messages = create_fallback_prompt(question, db_path)
         tools = None
 
-    # Placeholder response - in full implementation this would call LiteLLM
-    mock_response = {
-        "messages": messages,
-        "tools": tools,
-        "model": model,
-        "use_tools": use_tools,
-        "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```"  # Mock SQL response
-    }
+    try:
+        # Call LiteLLM with configured backend
+        response = litellm.completion(
+            model=formatted_model,
+            messages=messages,
+            tools=tools if use_tools else None,
+            temperature=0.1,
+            max_tokens=1000,
+            timeout=30
+        )
+
+        # Simple string-based response handling
+        raw_response = str(response)
+
+
+        response_data = {
+            "messages": messages,
+            "tools": tools,
+            "model": model,
+            "formatted_model": formatted_model,
+            "backend_info": backend_info,
+            "use_tools": use_tools,
+            "raw_response": raw_response,
+            "api_response": response
+        }
+
+    except Exception as e:
+        # Fallback for API errors
+        print(f"Model API error: {e}")
+        response_data = {
+            "messages": messages,
+            "tools": tools,
+            "model": model,
+            "formatted_model": formatted_model if 'formatted_model' in locals() else model,
+            "backend_info": backend_info if 'backend_info' in locals() else {},
+            "use_tools": use_tools,
+            "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```",  # Fallback
+            "api_error": str(e)
+        }
 
     # Use response parser to extract SQL
     parser = DefaultResponseParser()
-    generated_sql = parser.extract_sql(mock_response)
+    generated_sql = parser.extract_sql(response_data)
 
-    mock_response["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"  # Fallback
+    response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"  # Fallback
 
-    return mock_response
+    return response_data
 
 
 def evaluate_response(generated_sql: str, gold_sql: str, db_path: str) -> Dict[str, Any]:

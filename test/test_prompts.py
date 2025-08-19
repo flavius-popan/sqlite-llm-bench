@@ -294,7 +294,7 @@ class TestEvaluationPipeline:
         """Test response generation in tool calling mode."""
         response = generate_response(
             question="How many users?",
-            model="qwen/qwen3",
+            model="test-model",
             db_path="datasets/hello_world/database.db",
             use_tools=True
         )
@@ -302,7 +302,7 @@ class TestEvaluationPipeline:
         assert response["use_tools"] == True
         assert response["tools"] is not None
         assert len(response["tools"]) == 2
-        assert response["model"] == "qwen/qwen3"
+        assert response["model"] == "test-model"
 
     def test_generate_response_fallback_mode(self):
         """Test response generation in fallback mode."""

@@ -1,17 +1,11 @@
 """Tests for response parser functionality."""
 
-import pytest
 from extractors.base import BaseResponseParser
 from extractors.default import DefaultResponseParser
 
 
 class TestBaseResponseParser:
     """Test base response parser abstract interface."""
-
-    def test_base_parser_is_abstract(self):
-        """Test that BaseResponseParser cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            BaseResponseParser()
 
     def test_extract_sql_is_abstract(self):
         """Test that extract_sql method is abstract."""

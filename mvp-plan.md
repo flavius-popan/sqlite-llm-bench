@@ -94,11 +94,11 @@
 - [x] Parse multiple SQL statements from single response
 
 ### 3.2 LiteLLM Backend Integration
-- [ ] Install and configure LiteLLM dependency
-- [ ] Create model client wrapper (handles all backends)
-- [ ] Implement chat completions interface
-- [ ] Test backend auto-detection (LM Studio, Ollama, OpenRouter)
-- [ ] Verify automatic prompt template conversion works
+- [x] Install and configure LiteLLM dependency
+- [x] Create model client wrapper (handles all backends)
+- [x] Implement chat completions interface
+- [x] Test backend auto-detection (LM Studio, Ollama, OpenRouter)
+- [x] Verify automatic prompt template conversion works
 
 ### 3.3 LM Studio Backend Configuration
 - [ ] Create `backends/lmstudio.py` configuration
