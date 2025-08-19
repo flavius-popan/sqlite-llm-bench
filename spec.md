@@ -1,4 +1,4 @@
-# sqlite-llm-workbench (v0.3)
+# sqlite-llm-workbench (v0.4)
 
 > **Primary Goal**: Systematically test any LLM's ability to understand natural language and generate working SQL queries, helping you identify exactly where models succeed and fail in real-world data tasks.
 
@@ -13,6 +13,9 @@
 ---
 
 ## 1. Mission & Research Focus
+
+**Current MVP Status**: Core evaluation engine implemented with basic dataset support and backend auto-detection.
+
 
 **Core Question**: *How good is this model at using SQLite's features, functions, and advantages for real-world data tasks?*
 
@@ -147,6 +150,9 @@ python eval.py bird --limit 50
 
 ## 4. Three-Tier Data Architecture
 
+**MVP Status**: Tier 1 fully implemented, basic Tier 2 with hello_world dataset. Tier 3 features planned for future releases.
+
+
 ### 4.1 Tier Structure Overview
 
 The workbench supports three tiers of complexity, allowing users to start simple and scale as needed:
@@ -156,6 +162,20 @@ The workbench supports three tiers of complexity, allowing users to start simple
 **Tier 3 (Advanced Features)**: Full SQLite integration with rich metadata and analysis
 
 ### 4.2 Directory Structure by Tier
+
+**Current MVP Implementation**:
+```
+datasets/
+├── hello_world/           # Basic Tier 2 dataset (13 questions)
+│   ├── questions.jsonl    # Question/answer pairs
+│   └── sample.db         # SQLite database
+└── wikisql/              # Partial implementation
+    ├── metadata.json     # Dataset metadata
+    └── wikisql-top500.db # Database file
+```
+
+**Full Architecture (Future)**:
+
 
 #### **Tier 1: Direct File Mode**
 ```
@@ -376,6 +396,8 @@ python eval.py --dataset wikisql --view v_questions_joins --limit 5
 
 ### 6.2 Backend Auto-Detection
 
+**MVP Status**: Backend auto-detection fully implemented with endpoint availability checking.
+
 ```python
 BACKENDS = {
     "lm_studio": {
@@ -407,6 +429,9 @@ BACKENDS = {
 
 ## 7. Tool Interface Specification
 
+**MVP Status**: Core tool functions fully implemented and tested.
+
+
 ### 7.1 Core Tools (Dual-Mode Implementation)
 
 **Implementation Philosophy**: Tools return string data in SQLite CLI format for consistency across tool calling and prompt modes. OpenAI function definitions provide schema for tool-calling capable models.
@@ -414,7 +439,7 @@ BACKENDS = {
 ```python
 def describe_database(table_name: Optional[str] = None) -> str:
     """Get database schema information in SQLite CLI format.
-    
+
     Dual-mode tool that works for both function calling and direct execution.
     Returns pipe-separated values matching native SQLite PRAGMA output.
 
@@ -423,7 +448,7 @@ def describe_database(table_name: Optional[str] = None) -> str:
 
     Returns:
         Schema information as pipe-separated text (SQLite CLI format)
-        
+
     OpenAI Function Definition:
         {
             "type": "function",
@@ -445,7 +470,7 @@ def describe_database(table_name: Optional[str] = None) -> str:
 
 def execute_sql(query: str) -> str:
     """Execute SELECT query and return results in SQLite CLI format.
-    
+
     Dual-mode tool that works for both function calling and direct execution.
     Uses same function for model tool calls and evaluation comparison.
 
@@ -454,12 +479,12 @@ def execute_sql(query: str) -> str:
 
     Returns:
         Query results as pipe-separated text with headers (SQLite CLI format)
-        
+
     OpenAI Function Definition:
         {
             "type": "function",
             "function": {
-                "name": "execute_sql", 
+                "name": "execute_sql",
                 "description": "Execute SQL query and return results in SQLite CLI format",
                 "parameters": {
                     "type": "object",
@@ -492,6 +517,8 @@ def execute_sql(query: str) -> str:
 
 ## 8. Runtime & Safety Constraints
 
+**MVP Status**: All safety constraints implemented and enforced.
+
 * **SQLite engine:** Python stdlib `sqlite3` only (no extension loading). DBs opened `mode=ro`.
 * **Statement gate:** Only `SELECT` allowed. No CTEs with side effects, no PRAGMAs, no ATTACH/DETACH, no triggers, no writes.
 * **Row cap:** Default `LIMIT 1000` applied if absent (configurable per query).
@@ -520,6 +547,9 @@ def execute_sql(query: str) -> str:
 ---
 
 ### 9.3 Model Response Parser Architecture
+
+**MVP Status**: Parser architecture implemented with base parser and model family detection for gpt-oss and qwen families.
+
 
 #### 9.3.1 Goal
 
@@ -583,7 +613,26 @@ Group by response parsing patterns, not model vendors:
 
 ## 10. CLI Design
 
-### 10.1 Three-Tier CLI Interface
+**MVP Status**: Basic CLI implemented with direct file mode and simple dataset mode.
+
+
+### 10.1 CLI Interface (Current MVP)
+
+**Implemented Commands**:
+```bash
+# Direct file mode (Tier 1)
+python eval.py --questions questions.jsonl --db database.db --model MODEL
+
+# Basic dataset mode (Tier 2)
+python eval.py hello_world --model MODEL
+
+# Options
+--verbose, -v     # Enable debugging output
+--workflow        # Use multi-step tool calling
+```
+
+### 10.2 Future Three-Tier CLI Interface
+
 
 The CLI supports three tiers of complexity with automatic detection and inference:
 
@@ -622,7 +671,7 @@ python eval.py hello-world --model "llama3:8b" --backend ollama
 3. **Question format**: Auto-detects single vs multi-database from JSONL content
 4. **Feature availability**: Views and advanced options only available for Tier 3 datasets
 
-### 10.2 Dataset Creation and Management
+### 10.3 Dataset Creation and Management (Future)
 
 #### **Interactive Dataset Creation**
 ```bash
@@ -748,6 +797,18 @@ python build_dataset.py --input datasets/mydataset/ --generate-views --add-tags
 ---
 
 ## 15. Implementation Plan
+
+**MVP Checkpoint (Current Status)**:
+✅ Core evaluation engine with tool calling support
+✅ Backend auto-detection (LM Studio → Ollama → OpenRouter)
+✅ Response parser architecture with model family detection
+✅ Direct file mode evaluation
+✅ Basic dataset support (hello_world)
+✅ Comprehensive test suite
+✅ Read-only SQL execution with safety constraints
+
+**Remaining Implementation**:
+
 
 ### Phase 1: Three-Tier Architecture Foundation
 
@@ -1095,23 +1156,70 @@ def execute_sql_tool(query: str, context: Dict, limit: int = 1000) -> Dict[str, 
 
 ---
 
-## 20. Current Implementation Status
+## 20. Current MVP Implementation Status
 
-### 20.1 Supported Datasets
+### 20.1 MVP Capabilities
 
+**Core Evaluation Engine**:
+- ✅ Tool calling interface with `describe_database()` and `execute_sql()`
+- ✅ Fallback prompt mode for non-tool-calling models
+- ✅ Read-only SQL execution with 30-second timeouts
+- ✅ SQLite CLI format output for consistency
+
+**Backend Integration**:
+- ✅ Auto-detection: LM Studio → Ollama → OpenRouter
+- ✅ Uniform parameters across all backends
+- ✅ Environment variable overrides for backend-specific settings
+- ✅ LiteLLM integration with proper provider routing
+
+**Response Parsing**:
+- ✅ Model family-based parser architecture
+- ✅ Tool calling and text extraction methods
+- ✅ Support for markdown code blocks and plain text SQL
+- ✅ Parser registry with gpt-oss and qwen family detection
+
+**CLI Interface**:
+- ✅ Direct file mode: `--questions file.jsonl --db path.db --model MODEL`
+- ✅ Dataset mode: `hello_world --model MODEL`
+- ✅ Verbose debugging and workflow options
+
+**Testing**:
+- ✅ Comprehensive test suite with pytest
+- ✅ Tool function testing, CLI testing, backend testing
+- ✅ Response parser testing and prompt testing
+
+### 20.2 Supported Datasets
+
+**Currently Available**:
+* **hello_world**: 13 basic examples for testing and validation
+* **wikisql**: Partial implementation with metadata structure
+
+**Planned Datasets**:
 * **WikiSQL**: 500 curated examples, single-database architecture
 * **Spider1**: ~1000 examples, multi-database architecture (20 domains)
-* **BIRD mini_dev**: 500 examples, multi-database architecture (11 domains)
+* **BIRD mini_dev**: 500 examples, multi-database with external knowledge
 * **Spider2-lite**: 24 high-quality examples, multi-database architecture
 * **BIRD LiveSQLBench**: 270 examples, multi-database with external knowledge
 
-### 20.2 Supported Backends
+### 20.3 Supported Backends
 
 * **LM Studio**: Local OpenAI-compatible server
 * **Ollama**: Local model serving
 * **OpenRouter**: Remote frontier model access
 
 ---
+
+### 20.4 Current Limitations
+
+**Dataset Architecture**: Only basic dataset support implemented. No templating system, versioning, or build scripts.
+
+**Multi-Database**: Current implementation focuses on single-database evaluation. Multi-database context management not implemented.
+
+**Advanced Analysis**: Schema scope detection, auto-generated tags, and views-based subsetting not yet implemented.
+
+**Dataset Management**: No interactive creation, upgrade system, or sophisticated metadata handling.
+
+**Complex Workflows**: Basic evaluation only. No multi-step analysis, error recovery, or advanced debugging features.
 
 ## 21. Glossary
 
