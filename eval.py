@@ -504,35 +504,61 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
     # Configure LiteLLM settings
     litellm.suppress_debug_info = True
 
+    formatted_model, backend_info = _configure_model_backend(model)
+    if formatted_model is None:
+        return _create_config_error_response(model, use_tools, backend_info)
+
+    # Create appropriate prompt and tools
+    messages, tools = _create_prompt_and_tools(question, db_path, use_tools)
+
+    # Make API call and get response data
+    response_data = _make_api_call(formatted_model, messages, tools, use_tools, model, backend_info)
+
+    # Extract SQL and add diagnostics
+    return _extract_sql_and_add_diagnostics(response_data, model)
+
+
+def _configure_model_backend(model: str) -> tuple:
+    """Configure model backend and return formatted model and backend info."""
     try:
         formatted_model = configure_backend(model)
         backend_info = get_backend_info(model)
+        return formatted_model, backend_info
     except ValueError as e:
         print(f"Backend configuration error: {e}")
-        response_data = {
-            "messages": [],
-            "tools": None,
-            "model": model,
-            "use_tools": use_tools,
-            "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```",
-            "config_error": str(e)
-        }
-        # Use appropriate response parser for model
-        parser = get_parser_for_model(model)
-        generated_sql = parser.extract_sql(response_data)
-        response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"
-        return response_data
+        return None, str(e)
 
-    # Create appropriate prompt
+
+def _create_config_error_response(model: str, use_tools: bool, error_msg: str) -> Dict[str, Any]:
+    """Create response data for configuration errors."""
+    response_data = {
+        "messages": [],
+        "tools": None,
+        "model": model,
+        "use_tools": use_tools,
+        "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```",
+        "config_error": error_msg
+    }
+    parser = get_parser_for_model(model)
+    generated_sql = parser.extract_sql(response_data)
+    response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"
+    return response_data
+
+
+def _create_prompt_and_tools(question: str, db_path: str, use_tools: bool) -> tuple:
+    """Create appropriate prompt and tools based on mode."""
     if use_tools:
         messages = create_tool_calling_prompt(question)
         tools = get_openai_tools()
     else:
         messages = create_fallback_prompt(question, db_path)
         tools = None
+    return messages, tools
 
+
+def _make_api_call(formatted_model: str, messages: list, tools: list, use_tools: bool, model: str, backend_info: dict) -> Dict[str, Any]:
+    """Make API call and return response data."""
     try:
-        # Call LiteLLM with configured backend and uniform parameters
         uniform_params = get_uniform_parameters()
         response = litellm.completion(
             model=formatted_model,
@@ -541,15 +567,8 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
             **uniform_params
         )
 
-        # Extract actual message content from response
-        if hasattr(response, 'choices') and response.choices and hasattr(response.choices[0], 'message'):
-            message = response.choices[0].message
-            raw_response = getattr(message, 'content', '') or ''
-        else:
-            raw_response = str(response)
-
-
-        response_data = {
+        raw_response = _extract_raw_response(response)
+        return {
             "messages": messages,
             "tools": tools,
             "model": model,
@@ -561,36 +580,74 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         }
 
     except Exception as e:
-        # Fallback for API errors
         print(f"Model API error: {e}")
-        response_data = {
+        return {
             "messages": messages,
             "tools": tools,
             "model": model,
-            "formatted_model": formatted_model if 'formatted_model' in locals() else model,
-            "backend_info": backend_info if 'backend_info' in locals() else {},
+            "formatted_model": formatted_model,
+            "backend_info": backend_info,
             "use_tools": use_tools,
             "raw_response": "",
             "api_error": str(e)
         }
 
-    # Use appropriate response parser for model
+
+def _extract_raw_response(response) -> str:
+    """Extract raw response content with safe attribute access."""
+    try:
+        if hasattr(response, 'choices') and getattr(response, 'choices', None):
+            choices = getattr(response, 'choices')
+            if choices and len(choices) > 0:
+                choice = choices[0]
+                if hasattr(choice, 'message'):
+                    message = getattr(choice, 'message', None)
+                    if message:
+                        content = getattr(message, 'content', '') or ''
+                        if content:
+                            return content
+    except (AttributeError, IndexError, TypeError):
+        pass
+
+    return str(response)
+
+
+def _extract_sql_and_add_diagnostics(response_data: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Extract SQL using parser and add diagnostic information."""
     parser = get_parser_for_model(model)
     generated_sql = parser.extract_sql(response_data)
-
     response_data["generated_sql"] = generated_sql
 
     # Add extraction failure information for diagnosis
     if not generated_sql:
+        has_tool_calls = _check_for_tool_calls(response_data)
         response_data["extraction_failure"] = {
             "parser_used": type(parser).__name__,
             "raw_response_length": len(response_data.get("raw_response", "")),
             "has_api_error": "api_error" in response_data,
-            "use_tools": use_tools,
-            "has_tool_calls": "tool_calls" in response_data.get("api_response", {}) if response_data.get("api_response") else False
+            "use_tools": response_data.get("use_tools", False),
+            "has_tool_calls": has_tool_calls
         }
 
     return response_data
+
+
+def _check_for_tool_calls(response_data: Dict[str, Any]) -> bool:
+    """Check if API response contains tool calls."""
+    try:
+        api_resp = response_data.get("api_response")
+        if api_resp and hasattr(api_resp, 'choices'):
+            choices = getattr(api_resp, 'choices', None)
+            if choices and len(choices) > 0:
+                choice = choices[0]
+                if hasattr(choice, 'message'):
+                    message = getattr(choice, 'message', None)
+                    if message and hasattr(message, 'tool_calls'):
+                        tool_calls = getattr(message, 'tool_calls', None)
+                        return tool_calls is not None and len(tool_calls) > 0
+    except (AttributeError, IndexError, TypeError):
+        pass
+    return False
 
 
 def evaluate_response(generated_sql: str, gold_sql: str, db_path: str) -> Dict[str, Any]:
@@ -661,11 +718,7 @@ def run_evaluation(eval_context: Dict[str, Any], model: str, verbose: bool = Fal
     print(f"Processing {eval_context['total_questions']} questions...")
 
     for i, q in enumerate(eval_context['questions']):
-        print("\n" + "─" * 60)
-        print(f"Question {i+1}/{eval_context['total_questions']}")
-        print("─" * 60)
-        print(f"Q: {q['question']}")
-        print(f"Table: {q.get('table', 'N/A')}")
+        _print_question_header(i, eval_context['total_questions'], q)
 
         # Generate response
         response = generate_response(
@@ -681,27 +734,7 @@ def run_evaluation(eval_context: Dict[str, Any], model: str, verbose: bool = Fal
         print(f"Generated SQL: {generated_sql}")
 
         if verbose:
-            print("\n  DEBUG: Full response data:")
-            if use_workflow:
-                print(f"    Workflow iterations: {response.get('workflow_iterations', 0)}")
-                print(f"    Conversation history: {len(response.get('conversation_history', []))} responses")
-            else:
-                print(f"    Raw response: {response.get('raw_response', 'None')[:200]}{'...' if len(str(response.get('raw_response', ''))) > 200 else ''}")
-            print(f"    Parser used: {type(get_parser_for_model(model)).__name__}")
-            print(f"    Backend: {response.get('backend_info', {}).get('backend', 'unknown')}")
-            if not use_workflow and 'api_response' in response:
-                api_resp = response['api_response']
-                if (hasattr(api_resp, 'choices') and api_resp.choices and
-                    hasattr(api_resp.choices[0], 'message')):
-                    choice = api_resp.choices[0]
-                    msg = choice.message
-                    print(f"    Message content: {getattr(msg, 'content', 'None')}")
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        print(f"    Tool calls: {len(msg.tool_calls)} calls")
-                        for tc in msg.tool_calls:
-                            if hasattr(tc, 'function') and hasattr(tc.function, 'name'):
-                                print(f"      - {tc.function.name}: {getattr(tc.function, 'arguments', 'None')}")
-            print("  END DEBUG\n")
+            _print_debug_info(response, model, use_workflow)
 
         # Evaluate against gold standard
         eval_result = evaluate_response(
@@ -721,40 +754,107 @@ def run_evaluation(eval_context: Dict[str, Any], model: str, verbose: bool = Fal
         results.append(result)
 
         # Show result with clear status
-        if eval_result.get('matches', False):
-            print(f"Result: PASS")
-        else:
-            print(f"Result: FAIL")
-
-            # Show extraction failure details
-            if not generated_sql:
-                print(f"Extraction failure: No SQL extracted from response")
-                if "extraction_failure" in response:
-                    failure_info = response["extraction_failure"]
-                    print(f"  Parser: {failure_info['parser_used']}")
-                    print(f"  Response length: {failure_info['raw_response_length']} chars")
-                    print(f"  API error: {failure_info['has_api_error']}")
-                    print(f"  Tool mode: {failure_info['use_tools']}")
-                    if failure_info['use_tools']:
-                        print(f"  Has tool calls: {failure_info['has_tool_calls']}")
-                if "api_error" in response:
-                    print(f"  API Error: {response['api_error']}")
-
-            # Show evaluation error details for failures
-            elif 'error' in eval_result:
-                print(f"SQL execution error: {eval_result['error']}")
-            elif eval_result.get('success', False):
-                print(f"Result mismatch:")
-                print(f"  Expected: {eval_result.get('gold_result', 'None')}")
-                print(f"  Generated: {eval_result.get('generated_result', 'None')}")
-
-            # Always show expected SQL for failures
-            print(f"Expected SQL: {q['sql']}")
+        _print_evaluation_result(eval_result, generated_sql, response, q)
 
     # Calculate summary
     passed = sum(1 for r in results if r.get('matches', False))
     total = len(results)
 
+    _print_summary(model, mode_desc, passed, total)
+
+    return {
+        "model": model,
+        "mode": "workflow" if use_workflow else ("tools" if use_tools else "prompt"),
+        "dataset": eval_context['dataset'],
+        "passed": passed,
+        "total": total,
+        "accuracy": passed / total if total > 0 else 0,
+        "results": results
+    }
+
+
+def _print_question_header(i: int, total: int, q: Dict[str, Any]) -> None:
+    """Print question header information."""
+    print("\n" + "─" * 60)
+    print(f"Question {i+1}/{total}")
+    print("─" * 60)
+    print(f"Q: {q['question']}")
+    print(f"Table: {q.get('table', 'N/A')}")
+
+
+def _print_debug_info(response: Dict[str, Any], model: str, use_workflow: bool) -> None:
+    """Print debug information for verbose mode."""
+    print("\n  DEBUG: Full response data:")
+    if use_workflow:
+        print(f"    Workflow iterations: {response.get('workflow_iterations', 0)}")
+        print(f"    Conversation history: {len(response.get('conversation_history', []))} responses")
+    else:
+        raw_response = response.get('raw_response', 'None')
+        print(f"    Raw response: {str(raw_response)[:200]}{'...' if len(str(raw_response)) > 200 else ''}")
+
+    print(f"    Parser used: {type(get_parser_for_model(model)).__name__}")
+    print(f"    Backend: {response.get('backend_info', {}).get('backend', 'unknown')}")
+
+    if not use_workflow and 'api_response' in response:
+        _print_api_response_debug(response['api_response'])
+    print("  END DEBUG\n")
+
+
+def _print_api_response_debug(api_resp: Any) -> None:
+    """Print API response debug information."""
+    if (hasattr(api_resp, 'choices') and api_resp.choices and
+        hasattr(api_resp.choices[0], 'message')):
+        choice = api_resp.choices[0]
+        msg = choice.message
+        print(f"    Message content: {getattr(msg, 'content', 'None')}")
+        if hasattr(msg, 'tool_calls') and msg.tool_calls:
+            print(f"    Tool calls: {len(msg.tool_calls)} calls")
+            for tc in msg.tool_calls:
+                if hasattr(tc, 'function') and hasattr(tc.function, 'name'):
+                    print(f"      - {tc.function.name}: {getattr(tc.function, 'arguments', 'None')}")
+
+
+def _print_evaluation_result(eval_result: Dict[str, Any], generated_sql: str, response: Dict[str, Any], q: Dict[str, Any]) -> None:
+    """Print evaluation result and failure details."""
+    if eval_result.get('matches', False):
+        print("Result: PASS")
+    else:
+        print("Result: FAIL")
+        _print_failure_details(generated_sql, response, eval_result, q)
+
+
+def _print_failure_details(generated_sql: str, response: Dict[str, Any], eval_result: Dict[str, Any], q: Dict[str, Any]) -> None:
+    """Print detailed failure information."""
+    if not generated_sql:
+        _print_extraction_failure(response)
+    elif 'error' in eval_result:
+        print(f"SQL execution error: {eval_result['error']}")
+    elif eval_result.get('success', False):
+        print("Result mismatch:")
+        print(f"  Expected: {eval_result.get('gold_result', 'None')}")
+        print(f"  Generated: {eval_result.get('generated_result', 'None')}")
+
+    # Always show expected SQL for failures
+    print(f"Expected SQL: {q['sql']}")
+
+
+def _print_extraction_failure(response: Dict[str, Any]) -> None:
+    """Print extraction failure details."""
+    print("Extraction failure: No SQL extracted from response")
+    if "extraction_failure" in response:
+        failure_info = response["extraction_failure"]
+        print(f"  Parser: {failure_info['parser_used']}")
+        print(f"  Response length: {failure_info['raw_response_length']} chars")
+        print(f"  API error: {failure_info['has_api_error']}")
+        print(f"  Tool mode: {failure_info['use_tools']}")
+        if failure_info['use_tools']:
+            print(f"  Has tool calls: {failure_info['has_tool_calls']}")
+    if "api_error" in response:
+        print(f"  API Error: {response['api_error']}")
+
+
+def _print_summary(model: str, mode_desc: str, passed: int, total: int) -> None:
+    """Print evaluation summary."""
     print()
     print("=" * 60)
     print("EVALUATION SUMMARY")
@@ -770,16 +870,6 @@ def run_evaluation(eval_context: Dict[str, Any], model: str, verbose: bool = Fal
         print(f"{total - passed} questions failed")
     else:
         print("All questions failed")
-
-    return {
-        "model": model,
-        "mode": "workflow" if use_workflow else ("tools" if use_tools else "prompt"),
-        "dataset": eval_context['dataset'],
-        "passed": passed,
-        "total": total,
-        "accuracy": passed / total if total > 0 else 0,
-        "results": results
-    }
 
 
 def main():
