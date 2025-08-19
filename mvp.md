@@ -25,18 +25,19 @@ sqlite-llm-bench/
 
 ### Core Components
 
-**eval.py** (~150-200 lines)
-- Generic prompt template (works across all models - backends handle conversion)
-- Tool functions: `describe_table`, `execute_sql`
+**eval.py** (~500+ lines)
+- Dual prompt templates (tool calling + fallback modes with schema injection)
+- Tool functions: `describe_database`, `execute_sql` (string-based SQLite CLI format)
+- OpenAI function calling definitions for tool-capable models
 - Evaluation flow: setup → generate → parse → execute → evaluate
-- CLI entry point
+- CLI entry point with complete evaluation pipeline
 
 **Response Parsers (Extractors)**
-- Model family-based SQL response parsing logic
-- Base extractor handles common response patterns (markdown, plain text)
-- Family-specific extractors handle unique response formats
-- Parse tool calling responses vs text responses
-- Auto-discovery via LiteLLM model name parsing
+- Model family-based SQL response parsing logic (placeholder implementation)
+- Dual-mode parsing: tool calling responses vs text responses
+- String-based tool returns maintain SQLite CLI format consistency
+- Auto-discovery via model name pattern matching
+- Base extraction patterns for MVP validation
 
 **Backends**
 - LM Studio configuration (temperature, endpoints)
@@ -58,19 +59,20 @@ sqlite-llm-bench/
 
 **CLI:** `python eval.py hello_world --model qwen/qwen3-30b-a3b-2507`
 
-**Tools:**
-- `describe_table(table_name)` - Schema information
-- `execute_sql(query)` - SQL execution with results
+**Tools (Dual-Mode):**
+- `describe_database(table_name=None)` - Schema information in SQLite CLI format
+- `execute_sql(query)` - SQL execution with pipe-separated results
+- OpenAI function definitions for tool-calling capable models
 
-**Output:** Console-only, human-readable pass/fail with details
+**Output:** Console evaluation summary with pass/fail details and accuracy metrics
 
 ## Evaluation
 
-- Parse SQL from model responses using extractors
-- Execute both predicted SQL and gold SQL against database
-- Compare predicted results vs gold SQL results (exact match)
+- Mode detection: tool calling vs prompt fallback based on model capabilities
+- Execute both predicted SQL and gold SQL using same `execute_sql()` function
+- Compare predicted results vs gold SQL results (string exact match)
 - Basic error handling: capture parsing/SQL/API failures, continue evaluation
-- No file output - ephemeral runs for rapid iteration
+- Console output with detailed evaluation summary and accuracy metrics
 
 ## Model Support
 
@@ -85,23 +87,27 @@ sqlite-llm-bench/
 
 ## Success Criteria
 
-1. **Tool interface validation** - Models can discover schema and execute SQL
-2. **Response parser validation** - Family-based SQL extraction works across models
-3. **Backend abstraction validation** - Automatic prompt formatting works
-4. **Evaluation pipeline validation** - End-to-end question → response → SQL → result flow
+- **Dual-mode tool validation** - Tools work in both function calling and prompt modes
+- **Response parser validation** - Family-based SQL extraction works across models  
+- **Backend abstraction validation** - Automatic prompt formatting works
+- **Evaluation pipeline validation** - End-to-end question → response → SQL → result flow
+- **Tool-first policy validation** - Function calling preferred, prompt fallback when unsupported
 
 ## Implementation Notes
 
 - Single-file main script with functional decomposition
-- Generic prompt template works across models (backends handle specialization)
+- Dual prompt templates: minimal for tool calling, rich for fallback
+- String-based tool returns (SQLite CLI format) with OpenAI function definitions
 - Response parser registry uses LiteLLM model family detection
+- Tool capability detection drives prompt mode selection
 - No dataset management - direct file references
 - Minimal documentation - focus on technical validation
 
 ## References
 
 See full specification in `spec.md` sections:
-- 7.1 Core Tools (tool interface)
+- 7.1 Core Tools (dual-mode tool interface with string returns)
+- 9.1 Tool-First Policy (function calling preferred, prompt fallback)
 - 9.3 Model Response Parser Architecture (response parser pattern)
 - 6.2 Backend Auto-Detection (backend system)
 - 4.3 Question File Format (questions.jsonl structure: {question, sql, table})

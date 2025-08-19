@@ -7,7 +7,7 @@ import argparse
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -84,6 +84,349 @@ def execute_sql(db_path: str, query: str) -> str:
         conn.close()
 
 
+def get_openai_tools() -> List[Dict[str, Any]]:
+    """Convert our existing tools to OpenAI function calling format.
+
+    Returns:
+        List of OpenAI-compatible tool definitions
+    """
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "describe_database",
+                "description": "Get database schema information in SQLite CLI format",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "Optional table name to describe. If not provided, returns all tables."
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_sql",
+                "description": "Execute SQL query and return results in SQLite CLI format",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "SQL SELECT statement to execute (read-only)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ]
+
+
+def create_tool_calling_prompt(question: str) -> List[Dict[str, Any]]:
+    """Create minimal prompt for tool-calling capable models.
+
+    Args:
+        question: The SQL question to ask the model
+
+    Returns:
+        OpenAI chat format messages optimized for tool calling
+    """
+    system_prompt = """You are an expert SQL analyst. Use the provided tools to explore the database and answer questions.
+
+Workflow:
+1. Use describe_database() to understand the schema
+2. Use execute_sql() to query the data
+3. Provide the final SQL query that answers the question
+
+Return your final SQL query in a clear, executable format."""
+
+    return [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": question
+        }
+    ]
+
+
+def create_fallback_prompt(question: str, db_path: str) -> List[Dict[str, Any]]:
+    """Create rich prompt with schema injection for non-tool models.
+
+    Args:
+        question: The SQL question to ask the model
+        db_path: Path to database for schema injection
+
+    Returns:
+        OpenAI chat format messages with embedded schema information
+    """
+    # Get schema for prompt injection
+    schema_info = describe_database(db_path)
+
+    system_prompt = f"""You are an expert SQL analyst. You have access to a SQLite database with the following schema:
+
+{schema_info}
+
+Instructions:
+- Write SQL SELECT queries to answer questions
+- Only SELECT statements are allowed (database is read-only)
+- Use proper table and column names from the schema above
+- Return your final SQL query in a clear, executable format
+
+Database Schema Summary:
+{schema_info}"""
+
+    return [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": question
+        }
+    ]
+
+
+def create_prompt_template() -> List[Dict[str, Any]]:
+    """Generic prompt template for backward compatibility.
+
+    Returns:
+        OpenAI chat format messages with system prompt and tool descriptions
+    """
+    system_prompt = """You are an expert SQL analyst. You have access to a SQLite database and can use the following tools to explore and query it:
+
+**describe_database(table_name=None)**: Get schema information for tables
+- If table_name is provided, returns column details for that specific table
+- If table_name is None, returns information for all tables in the database
+- Output format: pipe-separated values showing column details
+
+**execute_sql(query)**: Execute a SELECT query against the database
+- Only SELECT queries are allowed (database is read-only)
+- Returns results in pipe-separated format with headers
+- Has a 3 second timeout for safety
+
+When answering questions:
+1. First explore the database schema using describe_database()
+2. Understand the relationships between tables
+3. Write and execute SQL queries to answer the question
+4. Provide the final SQL query that answers the question
+
+Always return your final SQL query in a clear, executable format."""
+
+    return [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+
+
+def supports_tool_calling(model: str) -> bool:
+    """Check if model supports native tool calling.
+
+    Args:
+        model: Model name to check
+
+    Returns:
+        True if model supports tool calling, False otherwise
+    """
+    # For MVP, we'll use simple heuristics
+    # In full implementation, this would use litellm.supports_function_calling()
+    tool_capable_models = [
+        "gpt-", "openai/", "qwen", "llama3.1", "llama3.2", "mistral", "claude"
+    ]
+    return any(pattern in model.lower() for pattern in tool_capable_models)
+
+
+def create_prompt_with_question(question: str, model: str = "", db_path: str = "") -> List[Dict[str, Any]]:
+    """Create appropriate prompt based on model capabilities.
+
+    Args:
+        question: The SQL question to ask the model
+        model: Model name for capability detection
+        db_path: Database path for schema injection (fallback mode)
+
+    Returns:
+        Complete OpenAI chat format messages optimized for the model
+    """
+    if model and supports_tool_calling(model):
+        return create_tool_calling_prompt(question)
+    elif db_path:
+        return create_fallback_prompt(question, db_path)
+    else:
+        # Backward compatibility
+        messages = create_prompt_template()
+        messages.append({
+            "role": "user",
+            "content": question
+        })
+        return messages
+
+
+def setup_evaluation(dataset_name: str, questions_file: str, db_path: str) -> Dict[str, Any]:
+    """Setup evaluation environment.
+
+    Args:
+        dataset_name: Name of the dataset
+        questions_file: Path to questions.jsonl file
+        db_path: Path to database file
+
+    Returns:
+        Evaluation context dictionary
+    """
+    import json
+
+    # Load questions
+    questions = []
+    with open(questions_file, 'r') as f:
+        for line in f:
+            questions.append(json.loads(line.strip()))
+
+    return {
+        "dataset": dataset_name,
+        "questions": questions,
+        "db_path": str(db_path),
+        "total_questions": len(questions)
+    }
+
+
+def generate_response(question: str, model: str, db_path: str, use_tools: bool = False) -> Dict[str, Any]:
+    """Generate model response (placeholder for actual model integration).
+
+    Args:
+        question: The SQL question
+        model: Model name
+        db_path: Database path
+        use_tools: Whether to use tool calling mode
+
+    Returns:
+        Response data with generated content and metadata
+    """
+    # Create appropriate prompt
+    if use_tools:
+        messages = create_tool_calling_prompt(question)
+        tools = get_openai_tools()
+    else:
+        messages = create_fallback_prompt(question, db_path)
+        tools = None
+
+    # Placeholder response - in full implementation this would call LiteLLM
+    return {
+        "messages": messages,
+        "tools": tools,
+        "model": model,
+        "use_tools": use_tools,
+        "generated_sql": "SELECT COUNT(*) FROM users",  # Placeholder
+        "raw_response": "Mock response"  # Placeholder
+    }
+
+
+def evaluate_response(generated_sql: str, gold_sql: str, db_path: str) -> Dict[str, Any]:
+    """Evaluate generated SQL against gold standard.
+
+    Args:
+        generated_sql: SQL generated by the model
+        gold_sql: Gold standard SQL
+        db_path: Database path
+
+    Returns:
+        Evaluation results
+    """
+    try:
+        # Execute both queries using same function
+        generated_result = execute_sql(db_path, generated_sql)
+        gold_result = execute_sql(db_path, gold_sql)
+
+        # Compare results
+        matches = generated_result.strip() == gold_result.strip()
+
+        return {
+            "success": True,
+            "matches": matches,
+            "generated_result": generated_result,
+            "gold_result": gold_result,
+            "generated_sql": generated_sql,
+            "gold_sql": gold_sql
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "generated_sql": generated_sql,
+            "gold_sql": gold_sql
+        }
+
+
+def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Run complete evaluation pipeline.
+
+    Args:
+        eval_context: Context from setup_evaluation()
+        model: Model name to evaluate
+
+    Returns:
+        Evaluation results summary
+    """
+    results = []
+    use_tools = supports_tool_calling(model)
+
+    print(f"Evaluating {model} in {'tool calling' if use_tools else 'prompt fallback'} mode")
+    print(f"Processing {eval_context['total_questions']} questions...")
+
+    for i, q in enumerate(eval_context['questions']):
+        print(f"Question {i+1}/{eval_context['total_questions']}: {q['question'][:50]}...")
+
+        # Generate response
+        response = generate_response(
+            question=q['question'],
+            model=model,
+            db_path=eval_context['db_path'],
+            use_tools=use_tools
+        )
+
+        # Evaluate against gold standard
+        eval_result = evaluate_response(
+            generated_sql=response['generated_sql'],
+            gold_sql=q['sql'],
+            db_path=eval_context['db_path']
+        )
+
+        result = {
+            "question_id": i,
+            "question": q['question'],
+            "table": q.get('table'),
+            **eval_result,
+            "mode": "tools" if use_tools else "prompt"
+        }
+        results.append(result)
+
+        status = "✓" if eval_result.get('matches', False) else "✗"
+        print(f"  {status} {'PASS' if eval_result.get('matches', False) else 'FAIL'}")
+
+    # Calculate summary
+    passed = sum(1 for r in results if r.get('matches', False))
+    total = len(results)
+
+    return {
+        "model": model,
+        "mode": "tools" if use_tools else "prompt",
+        "dataset": eval_context['dataset'],
+        "passed": passed,
+        "total": total,
+        "accuracy": passed / total if total > 0 else 0,
+        "results": results
+    }
+
+
 def main():
     """Main entry point for the evaluation script."""
     parser = argparse.ArgumentParser(
@@ -124,6 +467,8 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # Validate arguments and setup paths
     if args.questions and args.db:
         questions_file = Path(args.questions)
         if not questions_file.exists():
@@ -135,9 +480,7 @@ Examples:
             print(f"Error: Database path not found at {db_path}")
             sys.exit(1)
 
-        print(f"Questions: {questions_file}")
-        print(f"Database: {db_path}")
-        print(f"Model: {args.model}")
+        dataset_name = "direct_file"
 
     elif args.dataset:
         dataset_path = Path(f'datasets/{args.dataset}')
@@ -150,15 +493,12 @@ Examples:
             print(f"Error: Questions file not found at {questions_file}")
             sys.exit(1)
 
-        database_file = dataset_path / 'database.db'
-        if not database_file.exists():
-            print(f"Error: Database file not found at {database_file}")
+        db_path = dataset_path / 'database.db'
+        if not db_path.exists():
+            print(f"Error: Database file not found at {db_path}")
             sys.exit(1)
 
-        print(f"Dataset: {args.dataset}")
-        print(f"Questions: {questions_file}")
-        print(f"Database: {database_file}")
-        print(f"Model: {args.model}")
+        dataset_name = args.dataset
 
     else:
         print("Error: Must specify either:")
@@ -166,7 +506,39 @@ Examples:
         print("  <dataset> --model <model>")
         sys.exit(1)
 
-    print("\nEvaluation pipeline not yet implemented")
+    # Setup and run evaluation
+    try:
+        print("Setting up evaluation...")
+        print(f"Dataset: {dataset_name}")
+        print(f"Questions: {questions_file}")
+        print(f"Database: {db_path}")
+        print(f"Model: {args.model}")
+        print()
+
+        # Setup evaluation context
+        eval_context = setup_evaluation(dataset_name, str(questions_file), str(db_path))
+
+        # Run evaluation
+        results = run_evaluation(eval_context, args.model)
+
+        # Print summary
+        print(f"\n{'='*60}")
+        print("EVALUATION COMPLETE")
+        print(f"{'='*60}")
+        print(f"Model: {results['model']}")
+        print(f"Mode: {results['mode']}")
+        print(f"Dataset: {results['dataset']}")
+        print(f"Accuracy: {results['passed']}/{results['total']} ({results['accuracy']:.1%})")
+
+        if results['accuracy'] < 1.0:
+            print("\nFailed questions:")
+            for r in results['results']:
+                if not r.get('matches', False):
+                    print(f"  - {r['question'][:60]}...")
+
+    except Exception as e:
+        print(f"Error during evaluation: {e}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

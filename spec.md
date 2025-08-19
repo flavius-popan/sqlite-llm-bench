@@ -407,66 +407,86 @@ BACKENDS = {
 
 ## 7. Tool Interface Specification
 
-### 7.1 Core Tools
+### 7.1 Core Tools (Dual-Mode Implementation)
+
+**Implementation Philosophy**: Tools return string data in SQLite CLI format for consistency across tool calling and prompt modes. OpenAI function definitions provide schema for tool-calling capable models.
 
 ```python
-def list_tables() -> List[str]:
-    """Returns table names in target_db, filtered by schema scope.
-
-    Only shows tables referenced in the gold SQL for current question
-    to prevent schema distraction and maintain focused context.
-    """
-
-def describe_table(table_name: str) -> Dict[str, Any]:
-    """Returns column information for table, filtered by schema scope.
+def describe_database(table_name: Optional[str] = None) -> str:
+    """Get database schema information in SQLite CLI format.
+    
+    Dual-mode tool that works for both function calling and direct execution.
+    Returns pipe-separated values matching native SQLite PRAGMA output.
 
     Args:
-        table_name: Must be one of the tables from list_tables()
+        table_name: Optional table name to describe, or None for all tables
 
     Returns:
+        Schema information as pipe-separated text (SQLite CLI format)
+        
+    OpenAI Function Definition:
         {
-            "columns": [
-                {"name": "id", "type": "INTEGER", "primary_key": True},
-                {"name": "name", "type": "TEXT", "nullable": False}
-            ],
-            "foreign_keys": [...],
-            "description": "Optional table description"
+            "type": "function",
+            "function": {
+                "name": "describe_database",
+                "description": "Get database schema information in SQLite CLI format",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "Optional table name to describe"
+                        }
+                    }
+                }
+            }
         }
     """
 
-def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, Any]:
-    """Executes query against target_db with safety limits.
+def execute_sql(query: str) -> str:
+    """Execute SELECT query and return results in SQLite CLI format.
+    
+    Dual-mode tool that works for both function calling and direct execution.
+    Uses same function for model tool calls and evaluation comparison.
 
     Args:
-        query: SQL SELECT statement (other statements blocked)
-        limit: Maximum rows returned (default 1000)
-        timeout: Query timeout in seconds (default 10)
+        query: SQL SELECT statement (read-only, 3 second timeout)
 
     Returns:
+        Query results as pipe-separated text with headers (SQLite CLI format)
+        
+    OpenAI Function Definition:
         {
-            "success": True,
-            "columns": ["col1", "col2"],
-            "rows": [["val1", "val2"], ...],
-            "row_count": 42,
-            "execution_time": 0.123
-        }
-
-    Or on error:
-        {
-            "success": False,
-            "error": "Error message",
-            "error_type": "syntax|timeout|blocked"
+            "type": "function",
+            "function": {
+                "name": "execute_sql", 
+                "description": "Execute SQL query and return results in SQLite CLI format",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "SQL SELECT statement to execute (read-only)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
         }
     """
 ```
 
 ### 7.2 Tool Behavior
 
-**Database targeting**: Tools automatically use the `target_db` from current evaluation item. Models don't specify database explicitly.
+**Dual-mode operation**: Tools work in both function calling mode (for tool-capable models) and prompt fallback mode (for text-only models).
 
-**Schema filtering**: Tools show only tables/columns referenced in gold SQL by default. Future enhancement may add `--full-schema` evaluation option.
+**String-based returns**: All tools return string data in SQLite CLI format for consistency. Tool calling models receive these strings as function responses.
 
-**Safety constraints**: Only SELECT statements allowed. PRAGMA, ATTACH, CTEs with side effects blocked.
+**Database targeting**: Tools automatically use the database from current evaluation context. Models don't specify database paths explicitly.
+
+**Safety constraints**: Read-only SQLite connections with query_only pragma. Only SELECT statements allowed with 3-second timeout.
+
+**Evaluation consistency**: Same `execute_sql()` function used for both model tool calls and gold SQL comparison, ensuring identical execution environment.
 
 ---
 
@@ -485,15 +505,17 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ### 9.1 Tool-First Policy
 
-* **Default mode**: Use tools. Available tools: `list_tables()`, `describe_table()`, `execute_sql()`.
-* **Backends with OpenAI-style tool calling** (LM Studio/Ollama with compatible models) use tools directly.
-* **Schema exposure**: Tools inject minimal schema scope (tables/columns from gold SQL only).
+* **Default mode**: Use function calling when supported. Available tools: `describe_database()`, `execute_sql()`.
+* **Tool-capable models** (Qwen, Llama 3.1+, GPT, Mistral) use OpenAI-compatible function calling via LiteLLM.
+* **Automatic detection**: Model name patterns determine tool calling capability, fallback to prompt mode otherwise.
+* **Consistent execution**: Same tool functions used in both modes, returning SQLite CLI format strings.
 
 ### 9.2 Prompt-Only Fallback
 
-* **Conditions**: Backend doesn't support tools OR N consecutive tool failures.
-* **Fallback behavior**: Request single SQLite `SELECT` statement as plain text; extract and execute under same safety constraints.
-* **Schema injection**: Include schema scope summary in prompt when tools unavailable.
+* **Conditions**: Model doesn't support function calling (detected by model name patterns).
+* **Fallback behavior**: Rich prompt with embedded schema information; extract SQL from text responses.
+* **Schema injection**: Full database schema automatically injected into system prompt using `describe_database()` output.
+* **Same safety**: Extracted SQL executed using identical `execute_sql()` function with same read-only constraints.
 
 ---
 

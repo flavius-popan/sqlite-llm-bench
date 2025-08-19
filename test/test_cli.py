@@ -190,12 +190,16 @@ class TestCLIArgumentParsing:
             captured = capsys.readouterr()
             assert 'Model: test/model' in captured.out
 
-    def test_evaluation_pipeline_message(self, capsys):
-        """Test that evaluation pipeline not implemented message appears."""
+    def test_evaluation_pipeline_runs(self, capsys):
+        """Test that evaluation pipeline executes without errors."""
         test_args = ['eval.py', 'hello_world', '--model', 'test/model']
 
         with patch('sys.argv', test_args):
+            # Should not raise any exceptions
             main()
 
             captured = capsys.readouterr()
-            assert 'Evaluation pipeline not yet implemented' in captured.out
+            # Verify some evaluation activity occurred
+            assert len(captured.out) > 100  # Should produce substantial output
+            assert 'test/model' in captured.out  # Should mention the model
+            assert captured.err == ""  # Should not have errors
