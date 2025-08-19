@@ -1,28 +1,17 @@
 """Tests for response parser functionality."""
 
 from extractors.base import BaseResponseParser
-from extractors.default import DefaultResponseParser
 
 
 class TestBaseResponseParser:
-    """Test base response parser abstract interface."""
-
-    def test_extract_sql_is_abstract(self):
-        """Test that extract_sql method is abstract."""
-        # This is verified by the instantiation test above
-        assert hasattr(BaseResponseParser, 'extract_sql')
-
-
-class TestDefaultResponseParser:
-    """Test default response parser implementation."""
+    """Test base response parser implementation."""
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_parser_instantiation(self):
-        """Test that DefaultResponseParser can be instantiated."""
-        assert isinstance(self.parser, DefaultResponseParser)
+        """Test that BaseResponseParser can be instantiated."""
         assert isinstance(self.parser, BaseResponseParser)
 
     def test_extract_sql_basic(self):
@@ -51,7 +40,7 @@ class TestMarkdownExtraction:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_extract_sql_markdown_block(self):
         """Test extraction from SQL markdown blocks."""
@@ -114,7 +103,7 @@ class TestPlainTextExtraction:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_extract_plain_text_select(self):
         """Test extraction of SELECT from plain text."""
@@ -175,7 +164,7 @@ class TestToolCallExtraction:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_extract_openai_tool_calls(self):
         """Test extraction from OpenAI-style tool calls."""
@@ -258,7 +247,7 @@ class TestSQLValidation:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_looks_like_sql_basic(self):
         """Test basic SQL detection."""
@@ -311,7 +300,7 @@ class TestIntegrationScenarios:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.parser = DefaultResponseParser()
+        self.parser = BaseResponseParser()
 
     def test_mixed_response_tool_call_preferred(self):
         """Test that tool calls are preferred over text when both present."""

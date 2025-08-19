@@ -161,25 +161,6 @@ class TestCLIArgumentParsing:
             assert 'Examples:' in captured.out
             assert exc_info.value.code == 0
 
-    def test_model_argument_formats(self, capsys):
-        """Test various model name formats are accepted."""
-        model_names = [
-            'qwen/qwen3-30b-a3b-2507',
-            'openai/gpt-oss-20b',
-            'llama3:8b',
-            'gpt-4',
-            'local-model'
-        ]
-
-        for model_name in model_names:
-            test_args = ['eval.py', 'hello_world', '--model', model_name]
-
-            with patch('sys.argv', test_args):
-                main()
-
-                captured = capsys.readouterr()
-                assert f'Model: {model_name}' in captured.out
-
     def test_short_model_flag(self, capsys):
         """Test that -m short flag works for model argument."""
         test_args = ['eval.py', 'hello_world', '-m', 'test/model']

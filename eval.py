@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import litellm
-from extractors.default import DefaultResponseParser
+from extractors.base import BaseResponseParser
 from backends import configure_backend, get_backend_info, get_uniform_parameters
 
 
@@ -330,7 +330,7 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
             "config_error": str(e)
         }
         # Use response parser to extract SQL
-        parser = DefaultResponseParser()
+        parser = BaseResponseParser()
         generated_sql = parser.extract_sql(response_data)
         response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"
         return response_data
@@ -383,7 +383,7 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         }
 
     # Use response parser to extract SQL
-    parser = DefaultResponseParser()
+    parser = BaseResponseParser()
     generated_sql = parser.extract_sql(response_data)
 
     response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"  # Fallback

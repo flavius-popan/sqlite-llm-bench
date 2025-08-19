@@ -100,7 +100,7 @@
 - [x] Test backend auto-detection (LM Studio, Ollama, OpenRouter)
 - [x] Verify automatic prompt template conversion works
 
-### 3.3 LM Studio Backend Configuration ✅ **SIMPLIFIED**
+### 3.3 LM Studio Backend Configuration
 - [x] Create single `backends.py` file with all backend logic
 - [x] Implement uniform parameter application (temperature=0.1, max_tokens=1024)
 - [x] Add per-backend environment variable overrides (LMSTUDIO_*, OLLAMA_*, OPENROUTER_*)
@@ -109,11 +109,11 @@
 - [x] Verify auto-detection and configuration works across all backends
 
 ### 3.4 Response Parser Registry
-- [ ] Create `extractors/__init__.py` registry system
-- [ ] Implement model name → parser family mapping
-- [ ] Map model families to response parser classes
-- [ ] Add fallback to base parser for unknown models
-- [ ] Test registry with target model names
+- [x] Create `extractors/__init__.py` registry system
+- [x] Implement model name → parser family mapping
+- [x] Map model families to response parser classes
+- [x] Add fallback to base parser for unknown models
+- [x] Test registry with target model names
 
 ## Phase 4: Model Extractors
 

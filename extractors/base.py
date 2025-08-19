@@ -1,14 +1,13 @@
 """Base response parser for extracting SQL from model responses."""
 
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Dict, Any, List, Optional
 
 
 class BaseResponseParser(ABC):
-    """Abstract base class for parsing SQL from model responses."""
+    """Base class for parsing SQL from model responses."""
 
-    @abstractmethod
     def extract_sql(self, response: Dict[str, Any]) -> Optional[str]:
         """Extract SQL from model response.
 
@@ -18,7 +17,7 @@ class BaseResponseParser(ABC):
         Returns:
             Extracted SQL string or None if no SQL found
         """
-        pass
+        return self.parse_response(response)
 
     def _extract_from_tool_calls(self, response: Dict[str, Any]) -> Optional[str]:
         """Extract SQL from tool calling response format.
