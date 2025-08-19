@@ -87,4 +87,4 @@ This document provides essential guidelines for AI agents working on the sqlite-
 - **Fix issues immediately**: Address typing errors, unused imports, etc.
 - **Type safety**: Ensure proper Optional types, correct parameter types
 
-Remember: Build exactly what the MVP specifies, test it thoroughly, keep it simple and clear. Focus on technical validation of core patterns rather than feature completeness.
+Remember: Build exactly what the MVP specifies, test it thoroughly, keep it simple and clear. Focus on technical validation of core patterns rather than feature completeness. DO NOT MOVE TO A NEW SECTION UNTIL EXPLICITLY TOLD TO! You must finish one section and then stop.

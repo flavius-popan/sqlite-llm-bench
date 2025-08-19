@@ -86,12 +86,12 @@
 ## Phase 3: Model Integration
 
 ### 3.1 Base Response Parser Class
-- [ ] Create `extractors/base.py` with abstract interface
-- [ ] Define `extract_sql()` method signature for response parsing
-- [ ] Implement SQL extraction from markdown code blocks (```sql, ```SQL)
-- [ ] Add regex patterns for plain text SQL detection
-- [ ] Handle tool calling vs text response parsing
-- [ ] Parse multiple SQL statements from single response
+- [x] Create `extractors/base.py` with abstract interface
+- [x] Define `extract_sql()` method signature for response parsing
+- [x] Implement SQL extraction from markdown code blocks (```sql, ```SQL)
+- [x] Add regex patterns for plain text SQL detection
+- [x] Handle tool calling vs text response parsing
+- [x] Parse multiple SQL statements from single response
 
 ### 3.2 LiteLLM Backend Integration
 - [ ] Install and configure LiteLLM dependency

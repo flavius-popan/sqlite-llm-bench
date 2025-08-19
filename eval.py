@@ -8,6 +8,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from extractors.default import DefaultResponseParser
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -319,14 +320,21 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         tools = None
 
     # Placeholder response - in full implementation this would call LiteLLM
-    return {
+    mock_response = {
         "messages": messages,
         "tools": tools,
         "model": model,
         "use_tools": use_tools,
-        "generated_sql": "SELECT COUNT(*) FROM users",  # Placeholder
-        "raw_response": "Mock response"  # Placeholder
+        "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```"  # Mock SQL response
     }
+
+    # Use response parser to extract SQL
+    parser = DefaultResponseParser()
+    generated_sql = parser.extract_sql(mock_response)
+
+    mock_response["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"  # Fallback
+
+    return mock_response
 
 
 def evaluate_response(generated_sql: str, gold_sql: str, db_path: str) -> Dict[str, Any]:
