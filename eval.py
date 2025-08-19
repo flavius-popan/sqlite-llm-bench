@@ -4,12 +4,13 @@ Basic CLI setup for evaluating language models on SQL generation tasks.
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import litellm
-from extractors.base import BaseResponseParser
+from extractors import get_parser_for_model
 from backends import configure_backend, get_backend_info, get_uniform_parameters
 
 
@@ -301,7 +302,189 @@ def setup_evaluation(dataset_name: str, questions_file: str, db_path: str) -> Di
     }
 
 
-def generate_response(question: str, model: str, db_path: str, use_tools: bool = False) -> Dict[str, Any]:
+def execute_tool_call(tool_call, db_path: str) -> str:
+    """Execute a tool call and return the result.
+
+    Args:
+        tool_call: Tool call object from model response
+        db_path: Database path
+
+    Returns:
+        String result from tool execution
+    """
+    function_name = tool_call.function.name
+
+    try:
+        arguments = json.loads(tool_call.function.arguments)
+    except json.JSONDecodeError:
+        return f"Error: Invalid JSON arguments for {function_name}"
+
+    try:
+        if function_name == "describe_database":
+            table_name = arguments.get("table_name")
+            return describe_database(db_path, table_name)
+        elif function_name == "execute_sql":
+            query = arguments.get("query")
+            if not query:
+                return "Error: No query provided to execute_sql"
+            return execute_sql(db_path, query)
+        else:
+            return f"Error: Unknown function {function_name}"
+    except Exception as e:
+        return f"Error executing {function_name}: {str(e)}"
+
+
+def generate_response_with_workflow(question: str, model: str, db_path: str) -> Dict[str, Any]:
+    """Generate response using multi-step tool calling workflow.
+
+    Args:
+        question: The SQL question
+        model: Model name
+        db_path: Database path
+
+    Returns:
+        Response data with conversation history and final SQL
+    """
+    # Configure LiteLLM settings
+    litellm.suppress_debug_info = True
+
+    try:
+        formatted_model = configure_backend(model)
+        backend_info = get_backend_info(model)
+    except ValueError as e:
+        print(f"Backend configuration error: {e}")
+        return {
+            "model": model,
+            "use_tools": True,
+            "conversation_history": [],
+            "generated_sql": "SELECT COUNT(*) FROM users",  # Fallback
+            "config_error": str(e)
+        }
+
+    # Create initial prompt
+    messages = create_tool_calling_prompt(question)
+    tools = get_openai_tools()
+    conversation_history = []
+    max_iterations = 5
+    final_sql = None
+
+    try:
+        for _ in range(max_iterations):
+            # Make API call
+            uniform_params = get_uniform_parameters()
+            response = litellm.completion(
+                model=formatted_model,
+                messages=messages,
+                tools=tools,
+                **uniform_params
+            )
+
+            conversation_history.append(response)
+
+            # Extract message from response
+            message = _extract_message_from_response(response)
+            if not message:
+                break
+
+            # Add assistant message to conversation
+            messages.append({
+                "role": "assistant",
+                "content": getattr(message, 'content', None) or "",
+                "tool_calls": getattr(message, 'tool_calls', None)
+            })
+
+            # Check if there are tool calls to execute
+            tool_calls = getattr(message, 'tool_calls', None)
+            if not tool_calls:
+                # No more tool calls, try to extract SQL from final message
+                break
+
+            # Process tool calls
+            final_sql = _process_tool_calls(tool_calls, messages, db_path, final_sql)
+
+            # If we got SQL from execute_sql, we're done
+            if final_sql:
+                break
+
+    except Exception as e:
+        print(f"Workflow error: {e}")
+        conversation_history.append(f"Error: {str(e)}")
+
+    # Extract final SQL using parser as fallback
+    if not final_sql:
+        final_sql = _extract_sql_fallback(model, conversation_history)
+
+    return {
+        "model": model,
+        "formatted_model": formatted_model,
+        "backend_info": backend_info,
+        "use_tools": True,
+        "conversation_history": conversation_history,
+        "messages": messages,
+        "tools": tools,
+        "generated_sql": final_sql or "SELECT COUNT(*) FROM users",  # Fallback
+        "workflow_iterations": len(conversation_history)
+    }
+
+
+def _extract_message_from_response(response) -> Optional[Any]:
+    """Extract message from API response with safe attribute access."""
+    if not hasattr(response, 'choices'):
+        return None
+
+    choices = getattr(response, 'choices', None)
+    if not choices:
+        return None
+
+    choice = choices[0]
+    return getattr(choice, 'message', None)
+
+
+def _process_tool_calls(tool_calls, messages: List[Dict[str, Any]], db_path: str, current_final_sql: Optional[str]) -> Optional[str]:
+    """Process tool calls and return final SQL if found."""
+    final_sql = current_final_sql
+
+    for tool_call in tool_calls:
+        result = execute_tool_call(tool_call, db_path)
+
+        # Add tool result to conversation
+        messages.append({
+            "role": "tool",
+            "tool_call_id": getattr(tool_call, 'id', ''),
+            "content": result
+        })
+
+        # Check if this was an execute_sql call (final SQL)
+        if hasattr(tool_call, 'function') and hasattr(tool_call.function, 'name'):
+            if tool_call.function.name == "execute_sql":
+                final_sql = _extract_sql_from_tool_call(tool_call)
+
+    return final_sql
+
+
+def _extract_sql_from_tool_call(tool_call) -> Optional[str]:
+    """Extract SQL from execute_sql tool call."""
+    try:
+        if hasattr(tool_call.function, 'arguments'):
+            args = json.loads(tool_call.function.arguments)
+            return args.get("query")
+    except (json.JSONDecodeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+def _extract_sql_fallback(model: str, conversation_history: List) -> Optional[str]:
+    """Extract SQL using parser as fallback."""
+    parser = get_parser_for_model(model)
+    response_data = {
+        "conversation_history": conversation_history,
+        "raw_response": str(conversation_history[-1]) if conversation_history else "",
+        "api_response": conversation_history[-1] if conversation_history else None
+    }
+    return parser.extract_sql_from_conversation(conversation_history) or parser.extract_sql(response_data)
+
+
+def generate_response(question: str, model: str, db_path: str, use_tools: bool = False, use_workflow: bool = False) -> Dict[str, Any]:
     """Generate model response using LiteLLM backend integration.
 
     Args:
@@ -309,10 +492,15 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         model: Model name (auto-detects backend)
         db_path: Database path
         use_tools: Whether to use tool calling mode
+        use_workflow: Whether to use multi-step tool calling workflow
 
     Returns:
         Response data with generated content and metadata
     """
+    # Use workflow mode if requested and model supports tools
+    if use_workflow and use_tools and supports_tool_calling(model):
+        return generate_response_with_workflow(question, model, db_path)
+
     # Configure LiteLLM settings
     litellm.suppress_debug_info = True
 
@@ -329,8 +517,8 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
             "raw_response": "```sql\nSELECT COUNT(*) FROM users;\n```",
             "config_error": str(e)
         }
-        # Use response parser to extract SQL
-        parser = BaseResponseParser()
+        # Use appropriate response parser for model
+        parser = get_parser_for_model(model)
         generated_sql = parser.extract_sql(response_data)
         response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"
         return response_data
@@ -382,8 +570,8 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
             "api_error": str(e)
         }
 
-    # Use response parser to extract SQL
-    parser = BaseResponseParser()
+    # Use appropriate response parser for model
+    parser = get_parser_for_model(model)
     generated_sql = parser.extract_sql(response_data)
 
     response_data["generated_sql"] = generated_sql or "SELECT COUNT(*) FROM users"  # Fallback
@@ -428,12 +616,14 @@ def evaluate_response(generated_sql: str, gold_sql: str, db_path: str) -> Dict[s
         }
 
 
-def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
+def run_evaluation(eval_context: Dict[str, Any], model: str, verbose: bool = False, use_workflow: bool = False) -> Dict[str, Any]:
     """Run complete evaluation pipeline.
 
     Args:
         eval_context: Context from setup_evaluation()
         model: Model name to evaluate
+        verbose: Enable verbose debugging output
+        use_workflow: Use multi-step tool calling workflow
 
     Returns:
         Evaluation results summary
@@ -441,7 +631,8 @@ def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
     results = []
     use_tools = supports_tool_calling(model)
 
-    print(f"Evaluating {model} in {'tool calling' if use_tools else 'prompt fallback'} mode")
+    mode_desc = "multi-step workflow" if use_workflow else ("tool calling" if use_tools else "prompt fallback")
+    print(f"Evaluating {model} in {mode_desc} mode")
     print(f"Processing {eval_context['total_questions']} questions...")
 
     for i, q in enumerate(eval_context['questions']):
@@ -452,8 +643,33 @@ def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
             question=q['question'],
             model=model,
             db_path=eval_context['db_path'],
-            use_tools=use_tools
+            use_tools=use_tools,
+            use_workflow=use_workflow
         )
+
+        if verbose:
+            print("\n  DEBUG: Full response data:")
+            print(f"    Generated SQL: {response.get('generated_sql', 'None')}")
+            if use_workflow:
+                print(f"    Workflow iterations: {response.get('workflow_iterations', 0)}")
+                print(f"    Conversation history: {len(response.get('conversation_history', []))} responses")
+            else:
+                print(f"    Raw response: {response.get('raw_response', 'None')[:200]}{'...' if len(str(response.get('raw_response', ''))) > 200 else ''}")
+            print(f"    Parser used: {type(get_parser_for_model(model)).__name__}")
+            print(f"    Backend: {response.get('backend_info', {}).get('backend', 'unknown')}")
+            if not use_workflow and 'api_response' in response:
+                api_resp = response['api_response']
+                if (hasattr(api_resp, 'choices') and api_resp.choices and
+                    hasattr(api_resp.choices[0], 'message')):
+                    choice = api_resp.choices[0]
+                    msg = choice.message
+                    print(f"    Message content: {getattr(msg, 'content', 'None')}")
+                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                        print(f"    Tool calls: {len(msg.tool_calls)} calls")
+                        for tc in msg.tool_calls:
+                            if hasattr(tc, 'function') and hasattr(tc.function, 'name'):
+                                print(f"      - {tc.function.name}: {getattr(tc.function, 'arguments', 'None')}")
+            print("  END DEBUG\n")
 
         # Evaluate against gold standard
         eval_result = evaluate_response(
@@ -467,12 +683,21 @@ def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
             "question": q['question'],
             "table": q.get('table'),
             **eval_result,
-            "mode": "tools" if use_tools else "prompt"
+            "mode": "workflow" if use_workflow else ("tools" if use_tools else "prompt"),
         }
         results.append(result)
 
         status = "✓" if eval_result.get('matches', False) else "✗"
         print(f"  {status} {'PASS' if eval_result.get('matches', False) else 'FAIL'}")
+
+        if verbose and not eval_result.get('matches', False):
+            print(f"    Expected SQL: {q['sql']}")
+            print(f"    Generated SQL: {response.get('generated_sql', 'None')}")
+            if 'error' in eval_result:
+                print(f"    Error: {eval_result['error']}")
+            elif eval_result.get('success', False):
+                print(f"    Expected result: {eval_result.get('gold_result', 'None')}")
+                print(f"    Generated result: {eval_result.get('generated_result', 'None')}")
 
     # Calculate summary
     passed = sum(1 for r in results if r.get('matches', False))
@@ -480,7 +705,7 @@ def run_evaluation(eval_context: Dict[str, Any], model: str) -> Dict[str, Any]:
 
     return {
         "model": model,
-        "mode": "tools" if use_tools else "prompt",
+        "mode": "workflow" if use_workflow else ("tools" if use_tools else "prompt"),
         "dataset": eval_context['dataset'],
         "passed": passed,
         "total": total,
@@ -526,6 +751,18 @@ Examples:
         '--model', '-m',
         required=True,
         help='Model name (e.g., qwen/qwen3-30b-a3b-2507)'
+    )
+
+    parser.add_argument(
+        '--verbose', '-v',
+        action='store_true',
+        help='Enable verbose debugging output'
+    )
+
+    parser.add_argument(
+        '--workflow',
+        action='store_true',
+        help='Use multi-step tool calling workflow'
     )
 
     args = parser.parse_args()
@@ -581,20 +818,20 @@ Examples:
         eval_context = setup_evaluation(dataset_name, str(questions_file), str(db_path))
 
         # Run evaluation
-        results = run_evaluation(eval_context, args.model)
+        summary = run_evaluation(eval_context, args.model, verbose=args.verbose, use_workflow=args.workflow)
 
         # Print summary
         print(f"\n{'='*60}")
         print("EVALUATION COMPLETE")
         print(f"{'='*60}")
-        print(f"Model: {results['model']}")
-        print(f"Mode: {results['mode']}")
-        print(f"Dataset: {results['dataset']}")
-        print(f"Accuracy: {results['passed']}/{results['total']} ({results['accuracy']:.1%})")
+        print(f"Model: {summary['model']}")
+        print(f"Mode: {summary['mode']}")
+        print(f"Dataset: {summary['dataset']}")
+        print(f"Accuracy: {summary['passed']}/{summary['total']} ({summary['accuracy']:.1%})")
 
-        if results['accuracy'] < 1.0:
+        if summary['accuracy'] < 1.0:
             print("\nFailed questions:")
-            for r in results['results']:
+            for r in summary['results']:
                 if not r.get('matches', False):
                     print(f"  - {r['question'][:60]}...")
 

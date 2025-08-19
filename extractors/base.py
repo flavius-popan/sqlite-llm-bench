@@ -1,5 +1,6 @@
 """Base response parser for extracting SQL from model responses."""
 
+import json
 import re
 from abc import ABC
 from typing import Dict, Any, List, Optional
@@ -229,3 +230,42 @@ class BaseResponseParser(ABC):
             sql_statements = self._extract_from_plain_text(raw_response)
 
         return self._select_best_sql(sql_statements)
+
+    def extract_sql_from_conversation(self, conversation_history: List) -> Optional[str]:
+        """Extract final SQL from complete conversation history.
+
+        Args:
+            conversation_history: List of API responses from conversation
+
+        Returns:
+            Final SQL string or None if no SQL found
+        """
+        if not conversation_history:
+            return None
+
+        # Check for execute_sql tool calls in reverse order (most recent first)
+        for response in reversed(conversation_history):
+            if hasattr(response, 'choices') and response.choices:
+                choice = response.choices[0]
+                if hasattr(choice, 'message') and hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                    for tool_call in choice.message.tool_calls:
+                        if tool_call.function.name == "execute_sql":
+                            try:
+                                args = json.loads(tool_call.function.arguments)
+                                sql = args.get("query")
+                                if sql:
+                                    return sql.strip()
+                            except (json.JSONDecodeError, Exception):
+                                continue
+
+        # Fall back to text parsing from final message
+        final_response = conversation_history[-1]
+        if hasattr(final_response, 'choices') and final_response.choices:
+            choice = final_response.choices[0]
+            if hasattr(choice, 'message') and choice.message.content:
+                sql_statements = self._extract_from_markdown(choice.message.content)
+                if not sql_statements:
+                    sql_statements = self._extract_from_plain_text(choice.message.content)
+                return self._select_best_sql(sql_statements)
+
+        return None
