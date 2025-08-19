@@ -18,20 +18,23 @@
 - [x] Verify all directories exist and are properly organized
 
 ### 1.2 Hello World Database Creation
-- [ ] Create `datasets/hello_world/database.db` with SQLite
-- [ ] Design users table: id (PK), name, email, created_at
-- [ ] Design orders table: id (PK), user_id (FK), product, amount, order_date
-- [ ] Insert 8-10 sample records across both tables
-- [ ] Verify foreign key relationships work correctly
+- [x] Create `datasets/hello_world/database.db` with SQLite
+- [x] Design users table: id (PK), name, email, created_at
+- [x] Design orders table: id (PK), user_id (FK), product, amount, order_date
+- [x] Insert 8-10 sample records across both tables
+- [x] Verify foreign key relationships work correctly
 
 ### 1.3 Questions Dataset
-- [ ] Create `datasets/hello_world/questions.jsonl`
-- [ ] Write 3-4 basic SELECT questions with WHERE clauses
-- [ ] Write 3-4 JOIN questions (users + orders)
-- [ ] Write 2-3 aggregate questions (COUNT, SUM, GROUP BY)
-- [ ] Write 1-2 subquery questions
-- [ ] Generate and verify gold results for each question
-- [ ] Validate JSONL format with question_id, question, expected_result fields
+- [x] Create `datasets/hello_world/questions.jsonl`
+- [x] Write 3-4 basic SELECT questions with WHERE clauses
+- [x] Write 3-4 JOIN questions (users + orders)
+- [x] Write 2-3 aggregate questions (COUNT, SUM, GROUP BY)
+- [x] Write 1-2 subquery questions
+- [x] Create gold SQL statements for each question
+- [x] Validate JSONL format with question, sql, table fields (per spec.md 4.3)
+- [x] Simplify questions for small model success (business tone, reduced complexity)
+- [x] Update database to use single names (Alice, Bob, Carol, Dave, Eve)
+- [x] Ensure all questions are context-independent (no hardcoded assumptions)
 
 ### 1.4 Basic CLI Setup
 - [ ] Create `eval.py` with argument parsing
@@ -60,10 +63,11 @@
 - [ ] Implement `setup()` function - load dataset, connect to DB
 - [ ] Implement `generate()` function - placeholder for model calls
 - [ ] Implement `execute()` function - run generated SQL via tools
-- [ ] Implement `evaluate()` function - compare results
+- [ ] Implement `evaluate()` function - compare results against gold SQL execution
 - [ ] Connect functions in main() with error boundaries
 
 ### 2.4 Result Comparison Logic
+- [ ] Execute both predicted SQL and gold SQL against database
 - [ ] Implement exact match comparison for query results
 - [ ] Handle different result ordering (sort before compare)
 - [ ] Add support for numeric precision tolerance
@@ -160,7 +164,7 @@
 ## Success Checkpoints
 
 - [ ] **Foundation Complete**: Database and questions load successfully
-- [ ] **Pipeline Functional**: Tools work and evaluation logic runs
+- [ ] **Pipeline Functional**: Tools work and evaluation logic runs with gold SQL comparison
 - [ ] **Backend Integration**: LiteLLM handles multiple backends automatically
 - [ ] **Response Parsing**: Both model families parse SQL responses correctly
 - [ ] **Generic Prompting**: Single prompt works across all models
@@ -169,8 +173,9 @@
 ## Final Deliverable
 
 - [ ] Single command runs complete evaluation: `python eval.py hello_world --model qwen/qwen3-30b-a3b-2507`
-- [ ] Console output shows clear results for all questions
+- [ ] Console output shows clear results for all questions with gold SQL comparison
 - [ ] Both target models (OpenAI OSS, Qwen3) work with their response parsers
 - [ ] Generic prompt template works across different backends
 - [ ] Architecture validates response parser pattern from full spec
 - [ ] Demonstrates backend abstraction (same prompt, different template conversion)
+- [ ] Questions use correct format: {question, sql, table} per spec.md section 4.3

@@ -52,7 +52,7 @@ sqlite-llm-bench/
 **questions.jsonl:**
 - 10-12 questions with graduated complexity
 - Basic SELECT → joins → subqueries progression
-- Gold results for comparison evaluation
+- Gold SQL statements for execution comparison (per spec.md 4.3 format)
 
 ## Interface
 
@@ -67,8 +67,8 @@ sqlite-llm-bench/
 ## Evaluation
 
 - Parse SQL from model responses using extractors
-- Execute parsed SQL against database
-- Compare actual vs expected results (exact match)
+- Execute both predicted SQL and gold SQL against database
+- Compare predicted results vs gold SQL results (exact match)
 - Basic error handling: capture parsing/SQL/API failures, continue evaluation
 - No file output - ephemeral runs for rapid iteration
 
@@ -104,4 +104,4 @@ See full specification in `spec.md` sections:
 - 7.1 Core Tools (tool interface)
 - 9.3 Model Response Parser Architecture (response parser pattern)
 - 6.2 Backend Auto-Detection (backend system)
-- 4.3 Question File Format (questions.jsonl structure)
+- 4.3 Question File Format (questions.jsonl structure: {question, sql, table})
