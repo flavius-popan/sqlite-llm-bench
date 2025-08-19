@@ -4,8 +4,84 @@ Basic CLI setup for evaluating language models on SQL generation tasks.
 """
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
+from typing import Optional
+
+
+def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
+    """Get database schema information in SQLite CLI format.
+
+    Args:
+        db_path: Path to SQLite database file
+        table_name: Optional table name to describe, or None for all tables
+
+    Returns:
+        Schema information as pipe-separated text
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = 1")  # Extra safety
+    cursor = conn.cursor()
+
+    try:
+        if table_name:
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return "\n".join("|".join(str(col) for col in row) for row in cursor.fetchall())
+        else:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            result = []
+            for table in tables:
+                result.append(f"Table: {table}")
+                cursor.execute(f"PRAGMA table_info({table})")
+                result.extend("|".join(str(col) for col in row) for row in cursor.fetchall())
+                result.append("")
+            return "\n".join(result)
+    finally:
+        conn.close()
+
+
+def execute_sql(db_path: str, query: str) -> str:
+    """Execute SELECT query and return results in SQLite CLI format.
+
+    Args:
+        db_path: Path to SQLite database file
+        query: SQL query to execute
+
+    Returns:
+        Query results as pipe-separated text with headers
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = 1")  # Extra safety
+    cursor = conn.cursor()
+
+    try:
+        # Simple timeout protection
+        def timeout_handler():
+            raise sqlite3.OperationalError("Query timeout")
+
+        import signal
+        signal.signal(signal.SIGALRM, lambda s, f: timeout_handler())
+        signal.alarm(3)  # 3s timeout
+
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        signal.alarm(0)  # Cancel timeout
+
+        # Get column names (available even for empty results)
+        headers = [desc[0] for desc in cursor.description]
+
+        # Format as pipe-separated with headers
+        result = ["|".join(headers)]
+
+        if rows:
+            result.extend("|".join(str(col) if col is not None else "" for col in row) for row in rows)
+
+        return "\n".join(result)
+    finally:
+        conn.close()
 
 
 def main():
