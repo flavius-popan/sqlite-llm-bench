@@ -37,10 +37,10 @@
 - [x] Ensure all questions are context-independent (no hardcoded assumptions)
 
 ### 1.4 Basic CLI Setup
-- [ ] Create `eval.py` with argument parsing
-- [ ] Implement `--model` and dataset positional argument
-- [ ] Add basic help text and argument validation
-- [ ] Test CLI accepts: `python eval.py hello_world --model test/model`
+- [x] Create `eval.py` with argument parsing
+- [x] Implement `--model` and dataset positional argument
+- [x] Add basic help text and argument validation
+- [x] Test CLI accepts: `python eval.py hello_world --model test/model`
 
 ## Phase 2: Core Pipeline
 
