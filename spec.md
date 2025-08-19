@@ -497,50 +497,65 @@ def execute_sql(query: str, limit: int = 1000, timeout: int = 10) -> Dict[str, A
 
 ---
 
-### 9.3 Model Adapter Architecture
+### 9.3 Model Response Parser Architecture
 
 #### 9.3.1 Goal
 
-Evaluate each model's SQLite capabilities using optimal prompting for that model, without compromising evaluation validity.
+Parse SQL responses from different model families reliably, while maintaining consistent prompt content across all models.
 
-**Core Principle**: All models receive the same information content, but formatted optimally for their architecture.
+**Core Principle**: All models receive identical prompt content. Backends (LM Studio, Ollama, OpenRouter) handle input formatting automatically. Our extractors handle output parsing only.
 
-#### 9.3.2 Two-Layer Design
+#### 9.3.2 Responsibility Separation
 
-**Dataset Prompt Builders** (`datasets/{dataset}/prompt_builder.py`):
-- Create information content: table schema, dataset-specific hints, task instructions
-- Handle data format clarifications (WikiSQL comma-formatted TEXT columns)
+**Backend Layer** (LM Studio/Ollama/OpenRouter):
+- Convert standard OpenAI chat format to model-specific templates
+- Handle role formatting (system/user/assistant)
+- Manage tool calling structure and parameter mapping
+- Apply model-specific prompt templates automatically
 
-**Model Response Adapters** (`model_adapters/{family}.py`):
-- Format content into optimal message structure for each model family (roles, message order)
-- Handle model-specific response parsing and SQL extraction
-- Manage tool calling mechanics (OpenAI standard vs Harmony vs prompt-only)
-- **Do not modify prompt content** - only structural formatting and response processing
+**LiteLLM Layer**:
+- Unified API across all backends
+- Automatic parameter mapping and authentication
+- Response format normalization
+- Backend-specific endpoint management
 
-#### 9.3.3 Prompt Content Boundary
+**Response Parser Layer** (`extractors/{family}.py`):
+- Parse model responses to extract clean SQL
+- Handle model-specific response formatting quirks
+- Extract SQL from various formats (markdown, tool calls, plain text)
+- Manage error handling and retry patterns
+- **Do not modify input prompts** - only parse output responses
 
-**Adjust for data format issues (Permitted)**:
-- Data representation facts: "Column contains comma-formatted numbers stored as TEXT"
-- Schema presentation clarity: Column types, constraints, available tables
-- Dataset-specific data quirks that affect query validity
+#### 9.3.3 Input/Output Boundary
 
-**Do not adjust for SQL reasoning difficulties (Prohibited)**:
-- SQL concept hints: "Use GROUP BY for aggregation"
-- Solution guidance: "For averages, use AVG() function"
-- SQL syntax teaching: Examples of aggregate functions or WHERE clauses
+**Input Handling (Automatic)**:
+- Prompt templating handled by backends
+- Tool definition formatting handled by backends
+- Role and message structure conversion handled by backends
 
-**Test Principle**: Evaluate SQL reasoning ability given clear data information, not prompt engineering skill.
+**Output Handling (Our Responsibility)**:
+- SQL extraction from markdown code blocks (```sql, ```SQL, plain text)
+- Tool calling response parsing
+- Multi-statement SQL handling
+- Response cleaning and validation
+- Model-specific failure mode detection
 
-#### 9.3.4 Model Grouping
+**Test Principle**: All models get identical information content. Measure SQL reasoning ability, not prompt engineering effectiveness.
 
-Group by response parsing needs, not vendor names:
-- Same adapter for similar response formats (version handling within adapter)
-- Split adapters when parsing logic becomes incompatible
-- Model name parsing determines adapter selection via factory pattern
+#### 9.3.4 Extractor Grouping
 
-#### 9.3.5 LiteLLM Integration
+Group by response parsing patterns, not model vendors:
+- Same extractor for models with similar response formats
+- Split extractors when parsing logic becomes incompatible
+- Model name → extractor mapping via family detection
+- Version handling within extractor when response formats change
 
-LiteLLM handles communication layer (API calls, provider detection), model adapters handle SQL-specific parsing and formatting.
+#### 9.3.5 Backend Integration Strategy
+
+**Generic Prompt Template**: Single template works across all models since backends handle conversion
+**LiteLLM Integration**: Abstracts backend differences for API calls
+**Response Parsing**: Family-specific extractors handle output variety
+**Error Handling**: Extractor-specific retry and fallback logic
 
 ---
 

@@ -1,7 +1,7 @@
 # sqlite-llm-bench MVP Specification
 
 ## Overview
-Single-afternoon proof of concept implementing core evaluation pipeline with hello_world dataset and two model extractors.
+Single-afternoon proof of concept implementing core evaluation pipeline with hello_world dataset and two response parsers.
 
 ## Architecture
 
@@ -26,19 +26,21 @@ sqlite-llm-bench/
 ### Core Components
 
 **eval.py** (~150-200 lines)
-- Generic prompt template (default for most models)
+- Generic prompt template (works across all models - backends handle conversion)
 - Tool functions: `describe_table`, `execute_sql`
-- Evaluation flow: setup → generate → execute → evaluate
+- Evaluation flow: setup → generate → parse → execute → evaluate
 - CLI entry point
 
-**Extractors**
-- Model family-based SQL extraction logic
-- Base extractor handles common patterns
-- Family-specific extractors override when needed
+**Response Parsers (Extractors)**
+- Model family-based SQL response parsing logic
+- Base extractor handles common response patterns (markdown, plain text)
+- Family-specific extractors handle unique response formats
+- Parse tool calling responses vs text responses
 - Auto-discovery via LiteLLM model name parsing
 
 **Backends**
 - LM Studio configuration (temperature, endpoints)
+- Automatic prompt template conversion (handled by backend)
 - Backend-specific parameter handling
 
 ## Dataset
@@ -64,33 +66,35 @@ sqlite-llm-bench/
 
 ## Evaluation
 
-- Execute generated SQL against database
+- Parse SQL from model responses using extractors
+- Execute parsed SQL against database
 - Compare actual vs expected results (exact match)
-- Basic error handling: capture SQL/API failures, continue evaluation
+- Basic error handling: capture parsing/SQL/API failures, continue evaluation
 - No file output - ephemeral runs for rapid iteration
 
 ## Model Support
 
 **Target models:**
-- `openai/gpt-oss-20b` via openai.py extractor
-- `qwen/qwen3-30b-a3b-2507` via qwen.py extractor
+- `openai/gpt-oss-20b` via openai.py response parser
+- `qwen/qwen3-30b-a3b-2507` via qwen.py response parser
 
 **LiteLLM integration:**
-- Model name parsing for extractor selection
+- Model name parsing for response parser selection
 - LM Studio backend for local model serving
+- Automatic prompt template handling
 
 ## Success Criteria
 
 1. **Tool interface validation** - Models can discover schema and execute SQL
-2. **Extractor pattern validation** - Family-based extraction works across models
-3. **Backend configuration validation** - LM Studio integration functional
-4. **Evaluation pipeline validation** - End-to-end question → SQL → result flow
+2. **Response parser validation** - Family-based SQL extraction works across models
+3. **Backend abstraction validation** - Automatic prompt formatting works
+4. **Evaluation pipeline validation** - End-to-end question → response → SQL → result flow
 
 ## Implementation Notes
 
 - Single-file main script with functional decomposition
-- Generic prompt template covers basic use cases
-- Extractor registry uses LiteLLM model family detection
+- Generic prompt template works across models (backends handle specialization)
+- Response parser registry uses LiteLLM model family detection
 - No dataset management - direct file references
 - Minimal documentation - focus on technical validation
 
@@ -98,6 +102,6 @@ sqlite-llm-bench/
 
 See full specification in `spec.md` sections:
 - 7.1 Core Tools (tool interface)
-- 9.3 Model Adapter Architecture (extractor pattern)
+- 9.3 Model Response Parser Architecture (response parser pattern)
 - 6.2 Backend Auto-Detection (backend system)
 - 4.3 Question File Format (questions.jsonl structure)
