@@ -126,12 +126,12 @@
 - [x] Register in parser registry with 'gpt-oss' family mapping
 
 ### 4.2 Qwen Family Response Parser
-- [ ] Create `extractors/qwen.py`
-- [ ] Inherit from base response parser
-- [ ] Implement Qwen3-specific response parsing patterns
-- [ ] Handle Qwen response formatting quirks (code block variations)
-- [ ] Parse both tool calling and text-based SQL responses
-- [ ] Test with sample Qwen model responses
+- [x] Create `extractors/qwen.py`
+- [x] Inherit from base response parser
+- [x] Implement Qwen3-specific response parsing patterns
+- [x] Handle Qwen response formatting quirks (code block variations)
+- [x] Parse both tool calling and text-based SQL responses
+- [x] Test with sample Qwen model responses
 
 ### 4.3 End-to-End Integration
 - [ ] Connect response parser registry to evaluation pipeline

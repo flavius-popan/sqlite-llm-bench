@@ -2,13 +2,15 @@
 
 from .base import BaseResponseParser
 from .gpt_oss import GptOssResponseParser
+from .qwen import QwenResponseParser
 
-__all__ = ['BaseResponseParser', 'GptOssResponseParser']
+__all__ = ['BaseResponseParser', 'GptOssResponseParser', 'QwenResponseParser']
 
 
 # Model family to parser class mapping (will be populated as parsers are added)
 PARSER_REGISTRY = {
     'gpt-oss': GptOssResponseParser,
+    'qwen': QwenResponseParser,
 }
 
 
