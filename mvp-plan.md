@@ -6,7 +6,7 @@
 
 **Responsibility Split**:
 - **Backends**: Convert OpenAI chat format → model-specific templates
-- **LiteLLM**: Unified API across backends  
+- **LiteLLM**: Unified API across backends
 - **Response Parsers**: Parse model responses → clean SQL
 - **Generic Prompt**: Works across all models (backends handle specialization)
 
@@ -45,12 +45,12 @@
 ## Phase 2: Core Pipeline
 
 ### 2.1 Tool Functions
-- [ ] Implement `describe_table(table_name)` function
-- [ ] Return column names, types, constraints in structured format
-- [ ] Implement `execute_sql(query)` function  
-- [ ] Return query results as list of dictionaries
-- [ ] Add basic SQL safety checks (no DROP, DELETE, UPDATE)
-- [ ] Test tools against hello_world database
+- [x] Implement `describe_database(table_name=None)` function
+- [x] Return schema information in SQLite CLI format (pipe-separated PRAGMA output)
+- [x] Implement `execute_sql(query)` function with read-only connections and timeouts
+- [x] Return query results in SQLite CLI format (headers + pipe-separated values)
+- [x] Use SQLite read-only mode for automatic safety (no manual SQL parsing needed)
+- [x] Test tools against hello_world database with comprehensive test suite (29 tests)
 
 ### 2.2 Generic Prompt Template
 - [ ] Design single prompt template for all models
