@@ -1,12 +1,15 @@
 """Response parser module for extracting SQL from model responses."""
 
 from .base import BaseResponseParser
+from .gpt_oss import GptOssResponseParser
 
-__all__ = ['BaseResponseParser']
+__all__ = ['BaseResponseParser', 'GptOssResponseParser']
 
 
 # Model family to parser class mapping (will be populated as parsers are added)
-PARSER_REGISTRY = {}
+PARSER_REGISTRY = {
+    'gpt-oss': GptOssResponseParser,
+}
 
 
 def get_parser_for_model(model_name: str) -> BaseResponseParser:
@@ -39,9 +42,9 @@ def _get_model_family(model_name: str) -> str:
     """
     model_lower = model_name.lower()
 
-    # OpenAI family models
-    if any(keyword in model_lower for keyword in ['gpt', 'openai', 'o1']):
-        return 'openai'
+    # gpt-oss models specifically
+    if 'gpt-oss' in model_lower:
+        return 'gpt-oss'
 
     # Qwen family models
     if 'qwen' in model_lower:

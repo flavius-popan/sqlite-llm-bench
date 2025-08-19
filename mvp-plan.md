@@ -117,13 +117,13 @@
 
 ## Phase 4: Model Extractors
 
-### 4.1 OpenAI Family Response Parser
-- [ ] Create `extractors/openai.py`
-- [ ] Inherit from base response parser
-- [ ] Implement OpenAI-specific response parsing (gpt-oss Harmony format)
-- [ ] Handle tool calling responses vs text responses
-- [ ] Parse multi-channel responses (final, analysis, commentary)
-- [ ] Test with sample OpenAI model responses
+### 4.1 gpt-oss Response Parser
+- [x] Create `extractors/gpt_oss.py`
+- [x] Inherit from base response parser
+- [x] Implement gpt-oss-specific response parsing (placeholder for gpt-oss patterns)
+- [x] Handle tool calling responses vs text responses
+- [x] Target only gpt-oss models (gpt-oss-20b, gpt-oss-120b)
+- [x] Register in parser registry with 'gpt-oss' family mapping
 
 ### 4.2 Qwen Family Response Parser
 - [ ] Create `extractors/qwen.py`
@@ -172,8 +172,8 @@
 - [x] **Tool Interface Complete**: Dual-mode tools work for both function calling and prompt fallback
 - [x] **Prompt Templates Complete**: Tool calling and fallback prompts implemented
 - [x] **Evaluation Pipeline Complete**: Full end-to-end evaluation with mode detection
-- [ ] **Backend Integration**: LiteLLM handles multiple backends automatically
-- [ ] **Response Parsing**: Both model families parse SQL responses correctly
+- **Backend Integration**: LiteLLM handles multiple backends automatically
+- [ ] **Response Parsing**: Both model families (gpt-oss, qwen) parse SQL responses correctly
 - [ ] **MVP Complete**: Full evaluation runs end-to-end with actual model calls
 
 ## Final Deliverable
@@ -184,5 +184,5 @@
 - [x] Architecture validates tool-first policy with fallback from full spec
 - [x] Questions use correct format: {question, sql, table} per spec.md section 4.3
 - [x] String-based tool returns maintain SQLite CLI format consistency
-- [ ] Both target models (OpenAI OSS, Qwen3) work with their response parsers
+- [ ] Both target models (gpt-oss, Qwen3) work with their response parsers
 - [ ] Demonstrates backend abstraction via LiteLLM integration
