@@ -13,9 +13,9 @@
 ## Phase 1: Foundation & Data
 
 ### 1.1 Project Structure Setup
-- [ ] Create directory structure as specified in mvp.md
-- [ ] Add `__init__.py` files to extractors/ and backends/
-- [ ] Verify all directories exist and are properly organized
+- [x] Create directory structure as specified in mvp.md
+- [x] Add `__init__.py` files to extractors/ and backends/
+- [x] Verify all directories exist and are properly organized
 
 ### 1.2 Hello World Database Creation
 - [ ] Create `datasets/hello_world/database.db` with SQLite
