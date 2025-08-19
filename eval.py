@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import litellm
 from extractors.default import DefaultResponseParser
-from backends import configure_backend, get_backend_info
+from backends import configure_backend, get_backend_info, get_uniform_parameters
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -344,14 +344,13 @@ def generate_response(question: str, model: str, db_path: str, use_tools: bool =
         tools = None
 
     try:
-        # Call LiteLLM with configured backend
+        # Call LiteLLM with configured backend and uniform parameters
+        uniform_params = get_uniform_parameters()
         response = litellm.completion(
             model=formatted_model,
             messages=messages,
             tools=tools if use_tools else None,
-            temperature=0.1,
-            max_tokens=1000,
-            timeout=30
+            **uniform_params
         )
 
         # Simple string-based response handling
