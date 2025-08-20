@@ -808,6 +808,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "litellm" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "requests" },
 ]
@@ -815,6 +816,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "litellm", specifier = ">=1.75.5.post1" },
+    { name = "openai", specifier = ">=1.99.9" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "requests", specifier = ">=2.32.4" },
 ]
