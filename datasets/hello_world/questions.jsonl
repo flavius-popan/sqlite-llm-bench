@@ -2,11 +2,11 @@
 {"question": "Which products cost more than 100?", "sql": "SELECT product FROM orders WHERE amount > 100", "table": "orders"}
 {"question": "How many users do we have?", "sql": "SELECT COUNT(*) FROM users", "table": "users"}
 {"question": "What products did Bob buy?", "sql": "SELECT o.product FROM orders o JOIN users u ON o.user_id = u.id WHERE u.name = \"Bob\"", "table": "orders"}
-{"question": "Show me Alice's orders", "sql": "SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id WHERE u.name = \"Alice\"", "table": "users"}
+{"question": "Which products has Alice ordered?", "sql": "SELECT DISTINCT o.product FROM users u JOIN orders o ON u.id = o.user_id WHERE u.name = 'Alice';", "table": "users"}
 {"question": "Who bought laptops?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.product = \"Laptop\"", "table": "users"}
 {"question": "Show customers and their products", "sql": "SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id", "table": "users"}
 {"question": "Which customer bought the most expensive item?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.amount = (SELECT MAX(amount) FROM orders)", "table": "users"}
-{"question": "How many orders does each customer have?", "sql": "SELECT user_id, COUNT(*) FROM orders GROUP BY user_id", "table": "orders"}
+{"question": "How many orders does each customer have?", "sql": "SELECT u.name, COUNT(o.id) AS order_count FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name;", "table": "orders"}
 {"question": "What is the total of all orders?", "sql": "SELECT SUM(amount) FROM orders", "table": "orders"}
 {"question": "What is the average order amount?", "sql": "SELECT AVG(amount) FROM orders", "table": "orders"}
 {"question": "Who has orders over 500?", "sql": "SELECT name FROM users WHERE id IN (SELECT user_id FROM orders WHERE amount > 500)", "table": "users"}

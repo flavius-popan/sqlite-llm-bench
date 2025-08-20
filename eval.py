@@ -16,24 +16,26 @@ import requests
 from openai import OpenAI
 
 
+_DEFAULT_MODEL_PARAMS = {"temperature": 0.1, "top_p": 1.0, "max_tokens": 512}
+
 BACKENDS = {
     "lm_studio": {
         "base_url": "http://localhost:1234/v1",
         "provider": "openai",
         "api_key": "lm-studio",
-        "default_params": {"temperature": 0, "max_tokens": 1000}
+        "default_params": _DEFAULT_MODEL_PARAMS
     },
     "ollama": {
         "base_url": "http://localhost:11434/v1",
         "provider": "openai",
         "api_key": "ollama",
-        "default_params": {"temperature": 0, "max_tokens": 1000}
+        "default_params": _DEFAULT_MODEL_PARAMS
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1",
         "provider": "openai",
         "api_key": None,
-        "default_params": {"temperature": 0, "max_tokens": 1000}
+        "default_params": _DEFAULT_MODEL_PARAMS
     }
 }
 
