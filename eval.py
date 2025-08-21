@@ -12,65 +12,8 @@ import signal
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-import os
-import requests
-import litellm
-
-_DEFAULT_MODEL_PARAMS = {"temperature": 0.1, "top_p": 1.0, "max_tokens": 512}
-
-REASONING_KEYS = ['reasoning', 'reasoning_content']
-
-BACKENDS = {
-    "lm_studio": {
-        "base_url": "http://localhost:1234/v1",
-        "provider": "openai",
-        "api_key": "lm-studio",
-        "default_params": _DEFAULT_MODEL_PARAMS
-    },
-    "ollama": {
-        "base_url": "http://localhost:11434/v1",
-        "provider": "openai",
-        "api_key": "ollama",
-        "default_params": _DEFAULT_MODEL_PARAMS
-    },
-    "openrouter": {
-        "base_url": "https://openrouter.ai/api/v1",
-        "provider": "openai",
-        "api_key": None,
-        "default_params": _DEFAULT_MODEL_PARAMS
-    }
-}
-
-
-def get_backend(backend_name: Optional[str] = None) -> Optional[str]:
-    """Get available backend, either by manual selection or auto-detection.
-
-    Args:
-        backend_name: Optional backend name to force selection
-
-    Returns:
-        Backend name if available, None if none found
-    """
-    if backend_name:
-        if backend_name in BACKENDS:
-            return backend_name
-        return None
-
-    # Auto-detection fallback
-    for name, config in BACKENDS.items():
-        if name == "openrouter":
-            if os.getenv("OPENROUTER_API_KEY"):
-                return name
-            continue
-
-        try:
-            response = requests.get(f"{config['base_url'].rstrip('/v1')}/", timeout=2)
-            if response.status_code < 500:
-                return name
-        except (requests.exceptions.RequestException, requests.exceptions.Timeout):
-            continue
-
-    return None
+import backends
+from backends import REASONING_KEYS
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -211,56 +154,6 @@ def extract_sql(response: str) -> Optional[str]:
     return None
 
 
-def generate_response(prompt: str, model: str, backend_name: str, use_tools: bool = False) -> Dict[str, Any]:
-    """Generate response from model using LiteLLM.
-
-    Args:
-        prompt: Input prompt
-        model: Model identifier
-        backend_name: Name of the backend being used
-        use_tools: Whether to use tool calling
-
-    Returns:
-        The message dictionary from the API response, including raw fields.
-
-    Raises:
-        Exception: If model call fails
-    """
-    if use_tools:
-        raise NotImplementedError("Tool calling mode not yet implemented")
-
-    backend_config = BACKENDS[backend_name]
-    params = backend_config["default_params"].copy()
-    api_base = backend_config["base_url"]
-    api_key = backend_config.get("api_key")
-
-    if backend_name == "openrouter":
-        api_key = os.getenv("OPENROUTER_API_KEY")
-
-    # Construct LiteLLM model string
-    litellm_model = f"{backend_name}/{model}"
-
-    response = litellm.completion(
-        model=litellm_model,
-        messages=[{"role": "user", "content": prompt}],
-        api_base=api_base,
-        api_key=api_key,
-        **params
-    )
-
-    # Extract the message and combine with the full raw response
-    # This ensures fields like 'reasoning' are preserved
-    message_dict = response.choices[0].message.model_dump()
-    original_response = response._hidden_params.get('original_response', {})
-
-    if isinstance(original_response, dict):
-        # Combine the parsed message with the raw response, prioritizing parsed fields
-        full_response_message = {**original_response.get('choices', [{}])[0].get('message', {}), **message_dict}
-        return full_response_message
-
-    return message_dict
-
-
 def evaluate_response(expected_result: str, actual_result: str) -> bool:
     """Compare expected vs actual SQL execution results.
 
@@ -350,7 +243,7 @@ def run_evaluation(questions_file: str,
                 prompt = create_prompt(question, db_path, use_tools)
 
                 response_start = time.time()
-                response = generate_response(prompt, model, backend_name, use_tools)
+                response = backends.generate_response(prompt, model, backend_name, use_tools, debug=False, enable_reasoning=True)
                 response_end = time.time()
                 response_times.append(response_end - response_start)
 
@@ -397,6 +290,10 @@ def run_evaluation(questions_file: str,
                 'raw_content': raw_content,
                 'correct': is_correct,
             }
+            for key in REASONING_KEYS:
+                if response.get(key):
+                    result_dict['reasoning'] = response[key]
+                    break
 
             results.append(result_dict)
 
@@ -527,7 +424,7 @@ Examples:
         sys.exit(1)
 
     # Detect backend
-    backend_name = get_backend(args.backend)
+    backend_name = backends.get_backend(args.backend)
     if not backend_name:
         print(f"Error: Backend '{args.backend}' not available or no backend detected.")
         print("Please ensure one of the following is running:")
@@ -568,7 +465,7 @@ Examples:
             'dataset': dataset_name,
             'backend': backend_name,
             'run_timestamp_utc': start_timestamp,
-            'model_params': BACKENDS[backend_name]['default_params']
+            'model_params': backends.get_uniform_parameters()
         },
         **eval_results
     }
