@@ -188,19 +188,6 @@ def calculate_performance_metrics(response_times: List[float], total_time: float
     }
 
 
-def extract_model_name(model: str) -> str:
-    """Extract clean model name for directory structure.
-
-    Args:
-        model: Full model identifier (e.g., 'qwen/qwen3-30b-a3b-2507')
-
-    Returns:
-        Clean model name for directory (e.g., 'qwen3-30b-a3b-2507')
-    """
-    # Take last part after '/' and replace '@' with '_'
-    return model.split('/')[-1].replace('@', '_')
-
-
 def run_evaluation(questions_file: str,
                    db_path: str,
                    model: str,
@@ -243,7 +230,7 @@ def run_evaluation(questions_file: str,
                 prompt = create_prompt(question, db_path, use_tools)
 
                 response_start = time.time()
-                response = backends.generate_response(prompt, model, backend_name, use_tools, debug=False, enable_reasoning=True)
+                response = backends.generate_response(prompt, model, backend_name, use_tools, debug=False)
                 response_end = time.time()
                 response_times.append(response_end - response_start)
 
@@ -452,8 +439,7 @@ Examples:
         output_file = args.output
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_name = extract_model_name(args.model)
-        output_file = f"runs/{model_name}/{timestamp}_{dataset_name}.json"
+        output_file = f"runs/{args.model}/{timestamp}_{dataset_name}.json"
 
     # Create runs directory if it doesn't exist
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
