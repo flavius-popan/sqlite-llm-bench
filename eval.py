@@ -19,6 +19,8 @@ from openai import OpenAI
 
 _DEFAULT_MODEL_PARAMS = {"temperature": 0.1, "top_p": 1.0, "max_tokens": 512}
 
+REASONING_KEYS = ['reasoning', 'reasoning_content']
+
 BACKENDS = {
     "lm_studio": {
         "base_url": "http://localhost:1234/v1",
@@ -41,37 +43,47 @@ BACKENDS = {
 }
 
 
-def detect_backend() -> Optional[str]:
-    """Detect available backend in order: LM Studio -> Ollama -> OpenRouter.
+def get_backend(backend_name: Optional[str] = None) -> Optional[str]:
+    """Get available backend, either by manual selection or auto-detection.
+
+    Args:
+        backend_name: Optional backend name to force selection
 
     Returns:
         Backend name if available, None if none found
     """
-    for backend_name, config in BACKENDS.items():
-        if backend_name == "openrouter":
-            # OpenRouter requires API key
+    if backend_name:
+        if backend_name in BACKENDS:
+            return backend_name
+        return None
+
+    # Auto-detection fallback
+    for name, config in BACKENDS.items():
+        if name == "openrouter":
             if os.getenv("OPENROUTER_API_KEY"):
-                return backend_name
+                return name
             continue
 
         try:
-            # Test connection to local backends
             response = requests.get(f"{config['base_url'].rstrip('/v1')}/", timeout=2)
-            if response.status_code < 500:  # Accept any non-server error
-                return backend_name
+            if response.status_code < 500:
+                return name
         except (requests.exceptions.RequestException, requests.exceptions.Timeout):
             continue
 
     return None
 
 
-def initialize_client() -> tuple[Optional[OpenAI], Optional[str]]:
-    """Initialize OpenAI client with detected backend.
+def initialize_client(backend_name: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
+    """Initialize OpenAI client with a specific backend.
+
+    Args:
+        backend_name: Optional backend name to initialize
 
     Returns:
         Tuple of (client, backend_name) or (None, None) if no backend available
     """
-    backend_name = detect_backend()
+    backend_name = get_backend(backend_name)
     if not backend_name:
         return None, None
 
@@ -194,32 +206,11 @@ Provide ONLY the SQL query wrapped in ```sql blocks."""
     return prompt
 
 
-def extract_reasoning(response: str) -> Optional[str]:
-    """Extract reasoning text from model response.
-
-    Args:
-        response: Raw model response
-
-    Returns:
-        Reasoning text or None if not found
-    """
-    lines = response.strip().split('\n')
-    reasoning_lines = []
-
-    for line in lines:
-        line = line.strip()
-        if line and not line.startswith('```') and not any(keyword in line.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE']):
-            reasoning_lines.append(line)
-
-    reasoning = ' '.join(reasoning_lines).strip()
-    return reasoning if reasoning else None
-
-
 def extract_sql(response: str) -> Optional[str]:
-    """Extract SQL query from model response.
+    """Extract SQL query from model response content.
 
     Args:
-        response: Raw model response
+        response: Raw model response content
 
     Returns:
         Extracted SQL query or None if not found
@@ -251,7 +242,7 @@ def extract_sql(response: str) -> Optional[str]:
     return None
 
 
-def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str, use_tools: bool = False) -> str:
+def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str, use_tools: bool = False) -> Any:
     """Generate response from model.
 
     Args:
@@ -262,7 +253,7 @@ def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str
         use_tools: Whether to use tool calling
 
     Returns:
-        Raw model response
+        The message object from the API response
 
     Raises:
         Exception: If model call fails
@@ -280,7 +271,7 @@ def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str
         **params
     )
 
-    return response.choices[0].message.content
+    return response.choices[0].message
 
 
 def evaluate_response(expected_result: str, actual_result: str) -> bool:
@@ -378,21 +369,23 @@ def run_evaluation(questions_file: str,
                 response_end = time.time()
                 response_times.append(response_end - response_start)
 
-                # Extract SQL and reasoning
-                extracted_sql = extract_sql(response)
-                reasoning = extract_reasoning(response)
+                # Extract SQL from content field
+                raw_content = response.content if response.content else ""
+                extracted_sql = extract_sql(raw_content)
 
                 if extracted_sql is None:
                     result_dict = {
                         'question': question,
                         'expected_sql': expected_sql,
                         'extracted_sql': None,
-                        'correct': False,
                         'error': 'SQL extraction failed',
-                        'full_response': response
+                        'raw_content': raw_content,
+                        'correct': False
                     }
-                    if reasoning:
-                        result_dict['reasoning'] = reasoning
+                    for key in REASONING_KEYS:
+                        if hasattr(response, key) and getattr(response, key):
+                            result_dict['reasoning'] = getattr(response, key)
+                            break
 
                     results.append(result_dict)
                     total += 1
@@ -416,11 +409,9 @@ def run_evaluation(questions_file: str,
                 'extracted_sql': extracted_sql,
                 'expected_result': expected_result,
                 'actual_result': actual_result,
-                'correct': is_correct
+                'raw_content': raw_content,
+                'correct': is_correct,
             }
-
-            if reasoning:
-                result_dict['reasoning'] = reasoning
 
             results.append(result_dict)
 
@@ -454,7 +445,7 @@ def run_evaluation(questions_file: str,
         'total': total,
         'failed': failed,
         'performance': perf_metrics,
-        'results': results
+        'results': results,
     }
 
 
@@ -503,6 +494,12 @@ Examples:
     )
 
     parser.add_argument(
+        '--backend',
+        choices=['lm_studio', 'ollama', 'openrouter'],
+        help='Manually select backend'
+    )
+
+    parser.add_argument(
         '--output',
         help='Output results to JSON file (default: runs/results_TIMESTAMP.json)'
     )
@@ -545,9 +542,10 @@ Examples:
         sys.exit(1)
 
     # Initialize client
-    client, backend_name = initialize_client()
+    client, backend_name = initialize_client(args.backend)
     if not client or not backend_name:
-        print("Error: No available backend found. Please ensure one of the following is running:")
+        print(f"Error: Backend '{args.backend}' not available or no backend detected.")
+        print("Please ensure one of the following is running:")
         print("  - LM Studio (http://localhost:1234)")
         print("  - Ollama (http://localhost:11434)")
         print("  - Or set OPENROUTER_API_KEY environment variable")
@@ -557,16 +555,20 @@ Examples:
     print(f"Questions: {questions_file}")
     print(f"Database: {db_path}")
     print(f"Model: {args.model}")
-    print(f"Backend: {backend_name} ({BACKENDS[backend_name]['base_url']})\n")
+    print(f"Backend: {backend_name}\n")
 
     # Run evaluation
-    results = run_evaluation(questions_file, db_path, args.model, client, backend_name, args.use_tools)
+    from datetime import datetime
+    start_timestamp = datetime.now().isoformat()
+
+    eval_results = run_evaluation(
+        questions_file, db_path, args.model, client, backend_name, args.use_tools
+    )
 
     # Determine output file
     if args.output:
         output_file = args.output
     else:
-        from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         model_name = extract_model_name(args.model)
         output_file = f"runs/{model_name}/{timestamp}_{dataset_name}.json"
@@ -574,9 +576,21 @@ Examples:
     # Create runs directory if it doesn't exist
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
 
+    # Prepare final results object with metadata
+    final_results = {
+        'metadata': {
+            'model': args.model,
+            'dataset': dataset_name,
+            'backend': backend_name,
+            'run_timestamp_utc': start_timestamp,
+            'model_params': BACKENDS[backend_name]['default_params']
+        },
+        **eval_results
+    }
+
     # Save results
     with open(output_file, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(final_results, f, indent=2)
     print(f"\nResults saved to: {output_file}")
 
 
