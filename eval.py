@@ -194,6 +194,27 @@ Provide ONLY the SQL query wrapped in ```sql blocks."""
     return prompt
 
 
+def extract_reasoning(response: str) -> Optional[str]:
+    """Extract reasoning text from model response.
+
+    Args:
+        response: Raw model response
+
+    Returns:
+        Reasoning text or None if not found
+    """
+    lines = response.strip().split('\n')
+    reasoning_lines = []
+
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith('```') and not any(keyword in line.upper() for keyword in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE']):
+            reasoning_lines.append(line)
+
+    reasoning = ' '.join(reasoning_lines).strip()
+    return reasoning if reasoning else None
+
+
 def extract_sql(response: str) -> Optional[str]:
     """Extract SQL query from model response.
 
@@ -242,24 +263,24 @@ def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str
 
     Returns:
         Raw model response
+
+    Raises:
+        Exception: If model call fails
     """
     if use_tools:
         # Future extension point
         raise NotImplementedError("Tool calling mode not yet implemented")
 
-    try:
-        # Use backend default params
-        params = BACKENDS[backend_name]["default_params"].copy()
+    # Use backend default params
+    params = BACKENDS[backend_name]["default_params"].copy()
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            **params
-        )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        **params
+    )
 
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"Error: {str(e)}"
+    return response.choices[0].message.content
 
 
 def evaluate_response(expected_result: str, actual_result: str) -> bool:
@@ -337,7 +358,7 @@ def run_evaluation(questions_file: str,
     with open(questions_file, 'r') as f:
         total_questions = sum(1 for _ in f)
 
-    print(f"Processing {total_questions} questions...")
+    print(f"Processing {total_questions} questions: ", end="", flush=True)
 
     # Start timing from first request
     start_time = time.time()
@@ -348,27 +369,39 @@ def run_evaluation(questions_file: str,
             question = question_data['question']
             expected_sql = question_data['sql']
 
-            # Generate response with timing
-            prompt = create_prompt(question, db_path, use_tools)
+            try:
+                # Generate response with timing
+                prompt = create_prompt(question, db_path, use_tools)
 
-            response_start = time.time()
-            response = generate_response(prompt, model, client, backend_name, use_tools)
-            response_end = time.time()
-            response_times.append(response_end - response_start)
+                response_start = time.time()
+                response = generate_response(prompt, model, client, backend_name, use_tools)
+                response_end = time.time()
+                response_times.append(response_end - response_start)
 
-            # Extract SQL
-            extracted_sql = extract_sql(response)
+                # Extract SQL and reasoning
+                extracted_sql = extract_sql(response)
+                reasoning = extract_reasoning(response)
 
-            if extracted_sql is None:
-                results.append({
-                    'question': question,
-                    'expected_sql': expected_sql,
-                    'extracted_sql': None,
-                    'correct': False,
-                    'error': 'SQL extraction failed'
-                })
-                total += 1
-                continue
+                if extracted_sql is None:
+                    result_dict = {
+                        'question': question,
+                        'expected_sql': expected_sql,
+                        'extracted_sql': None,
+                        'correct': False,
+                        'error': 'SQL extraction failed',
+                        'full_response': response
+                    }
+                    if reasoning:
+                        result_dict['reasoning'] = reasoning
+
+                    results.append(result_dict)
+                    total += 1
+                    print("F", end="", flush=True)
+                    continue
+
+            except Exception as e:
+                print(f"\nError: Model call failed - {str(e)}")
+                sys.exit(1)
 
             # Execute both queries
             expected_result = execute_sql(db_path, expected_sql)
@@ -376,17 +409,26 @@ def run_evaluation(questions_file: str,
 
             # Evaluate
             is_correct = evaluate_response(expected_result, actual_result)
-            if is_correct:
-                correct += 1
 
-            results.append({
+            result_dict = {
                 'question': question,
                 'expected_sql': expected_sql,
                 'extracted_sql': extracted_sql,
                 'expected_result': expected_result,
                 'actual_result': actual_result,
                 'correct': is_correct
-            })
+            }
+
+            if reasoning:
+                result_dict['reasoning'] = reasoning
+
+            results.append(result_dict)
+
+            if is_correct:
+                correct += 1
+                print(".", end="", flush=True)
+            else:
+                print("F", end="", flush=True)
 
             total += 1
 
@@ -400,7 +442,7 @@ def run_evaluation(questions_file: str,
     # Calculate performance metrics
     perf_metrics = calculate_performance_metrics(response_times, total_time)
 
-    print("\n=== EVALUATION RESULTS ===")
+    print("\n\n=== EVALUATION RESULTS ===")
     print(f"Accuracy:         {correct}/{total} ({accuracy:.2%})")
     print(f"Total Runtime:    {perf_metrics['total_time']}s")
     print(f"Avg Per Question: {perf_metrics['avg_per_response']}s")
@@ -505,7 +547,10 @@ Examples:
     # Initialize client
     client, backend_name = initialize_client()
     if not client or not backend_name:
-        print("Error: No available backend found")
+        print("Error: No available backend found. Please ensure one of the following is running:")
+        print("  - LM Studio (http://localhost:1234)")
+        print("  - Ollama (http://localhost:11434)")
+        print("  - Or set OPENROUTER_API_KEY environment variable")
         sys.exit(1)
 
     print(f"Dataset: {dataset_name}")
