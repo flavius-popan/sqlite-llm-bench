@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import os
 import requests
-from openai import OpenAI
-
+import litellm
 
 _DEFAULT_MODEL_PARAMS = {"temperature": 0.1, "top_p": 1.0, "max_tokens": 512}
 
@@ -72,38 +71,6 @@ def get_backend(backend_name: Optional[str] = None) -> Optional[str]:
             continue
 
     return None
-
-
-def initialize_client(backend_name: Optional[str] = None) -> tuple[Optional[OpenAI], Optional[str]]:
-    """Initialize OpenAI client with a specific backend.
-
-    Args:
-        backend_name: Optional backend name to initialize
-
-    Returns:
-        Tuple of (client, backend_name) or (None, None) if no backend available
-    """
-    backend_name = get_backend(backend_name)
-    if not backend_name:
-        return None, None
-
-    backend_config = BACKENDS[backend_name]
-
-    # Get API key
-    api_key = backend_config["api_key"]
-    if backend_name == "openrouter":
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            return None, None
-
-    try:
-        client = OpenAI(
-            base_url=backend_config["base_url"],
-            api_key=api_key
-        )
-        return client, backend_name
-    except Exception:
-        return None, None
 
 
 def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
@@ -242,36 +209,54 @@ def extract_sql(response: str) -> Optional[str]:
     return None
 
 
-def generate_response(prompt: str, model: str, client: OpenAI, backend_name: str, use_tools: bool = False) -> Any:
-    """Generate response from model.
+def generate_response(prompt: str, model: str, backend_name: str, use_tools: bool = False) -> Dict[str, Any]:
+    """Generate response from model using LiteLLM.
 
     Args:
         prompt: Input prompt
         model: Model identifier
-        client: Initialized OpenAI client
         backend_name: Name of the backend being used
         use_tools: Whether to use tool calling
 
     Returns:
-        The message object from the API response
+        The message dictionary from the API response, including raw fields.
 
     Raises:
         Exception: If model call fails
     """
     if use_tools:
-        # Future extension point
         raise NotImplementedError("Tool calling mode not yet implemented")
 
-    # Use backend default params
-    params = BACKENDS[backend_name]["default_params"].copy()
+    backend_config = BACKENDS[backend_name]
+    params = backend_config["default_params"].copy()
+    api_base = backend_config["base_url"]
+    api_key = backend_config.get("api_key")
 
-    response = client.chat.completions.create(
-        model=model,
+    if backend_name == "openrouter":
+        api_key = os.getenv("OPENROUTER_API_KEY")
+
+    # Construct LiteLLM model string
+    litellm_model = f"{backend_name}/{model}"
+
+    response = litellm.completion(
+        model=litellm_model,
         messages=[{"role": "user", "content": prompt}],
+        api_base=api_base,
+        api_key=api_key,
         **params
     )
 
-    return response.choices[0].message
+    # Extract the message and combine with the full raw response
+    # This ensures fields like 'reasoning' are preserved
+    message_dict = response.choices[0].message.model_dump()
+    original_response = response._hidden_params.get('original_response', {})
+
+    if isinstance(original_response, dict):
+        # Combine the parsed message with the raw response, prioritizing parsed fields
+        full_response_message = {**original_response.get('choices', [{}])[0].get('message', {}), **message_dict}
+        return full_response_message
+
+    return message_dict
 
 
 def evaluate_response(expected_result: str, actual_result: str) -> bool:
@@ -324,7 +309,6 @@ def extract_model_name(model: str) -> str:
 def run_evaluation(questions_file: str,
                    db_path: str,
                    model: str,
-                   client: OpenAI,
                    backend_name: str,
                    use_tools: bool = False) -> Dict[str, Any]:
     """Run evaluation on dataset.
@@ -333,7 +317,6 @@ def run_evaluation(questions_file: str,
         questions_file: Path to JSONL questions file
         db_path: Path to database
         model: Model identifier
-        client: Initialized OpenAI client
         backend_name: Name of the backend being used
         use_tools: Whether to use tool calling
 
@@ -365,12 +348,12 @@ def run_evaluation(questions_file: str,
                 prompt = create_prompt(question, db_path, use_tools)
 
                 response_start = time.time()
-                response = generate_response(prompt, model, client, backend_name, use_tools)
+                response = generate_response(prompt, model, backend_name, use_tools)
                 response_end = time.time()
                 response_times.append(response_end - response_start)
 
                 # Extract SQL from content field
-                raw_content = response.content if response.content else ""
+                raw_content = response.get('content', '') or ""
                 extracted_sql = extract_sql(raw_content)
 
                 if extracted_sql is None:
@@ -383,8 +366,8 @@ def run_evaluation(questions_file: str,
                         'correct': False
                     }
                     for key in REASONING_KEYS:
-                        if hasattr(response, key) and getattr(response, key):
-                            result_dict['reasoning'] = getattr(response, key)
+                        if response.get(key):
+                            result_dict['reasoning'] = response[key]
                             break
 
                     results.append(result_dict)
@@ -541,9 +524,9 @@ Examples:
         print(f"Database file not found: {db_path}")
         sys.exit(1)
 
-    # Initialize client
-    client, backend_name = initialize_client(args.backend)
-    if not client or not backend_name:
+    # Detect backend
+    backend_name = get_backend(args.backend)
+    if not backend_name:
         print(f"Error: Backend '{args.backend}' not available or no backend detected.")
         print("Please ensure one of the following is running:")
         print("  - LM Studio (http://localhost:1234)")
@@ -562,7 +545,7 @@ Examples:
     start_timestamp = datetime.now().isoformat()
 
     eval_results = run_evaluation(
-        questions_file, db_path, args.model, client, backend_name, args.use_tools
+        questions_file, db_path, args.model, backend_name, args.use_tools
     )
 
     # Determine output file
