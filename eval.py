@@ -16,12 +16,12 @@ import backends
 from backends import REASONING_KEYS
 
 
-def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
+def describe_database(db_path: str, table_names: Optional[List[str]] = None) -> str:
     """Get database schema information in SQLite CLI format.
 
     Args:
         db_path: Path to SQLite database file
-        table_name: Optional table name to describe, or None for all tables
+        table_names: Optional list of table names to describe, or None for all tables
 
     Returns:
         Schema information as pipe-separated text
@@ -31,21 +31,20 @@ def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
     cursor = conn.cursor()
 
     try:
-        if table_name:
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            return "\n".join("|".join(str(col) for col in row) for row in cursor.fetchall())
-        else:
+        if table_names is None:
             cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'"
             )
-            tables = [row[0] for row in cursor.fetchall()]
-            result = []
-            for table in tables:
-                result.append(f"Table: {table}")
-                cursor.execute(f"PRAGMA table_info({table})")
-                result.extend("|".join(str(col) for col in row) for row in cursor.fetchall())
-                result.append("")
-            return "\n".join(result)
+            table_names = [row[0] for row in cursor.fetchall()]
+
+        result = []
+        for table in table_names:
+            result.append(f"Table: {table}")
+            cursor.execute(f"PRAGMA table_info({table})")
+            result.extend("|".join(str(col) for col in row) for row in cursor.fetchall())
+            result.append("")
+
+        return "\n".join(result)
     finally:
         conn.close()
 
@@ -88,11 +87,11 @@ def execute_sql(db_path: str, query: str) -> str:
         conn.close()
 
 
-def create_prompt(question: str, db_path: str, use_tools: bool = False) -> str:
+def create_prompt(question_data: Dict[str, Any], db_path: str, use_tools: bool = False) -> str:
     """Create prompt for SQL generation.
 
     Args:
-        question: Natural language question
+        question_data: Dictionary containing question, tables, and other metadata
         db_path: Path to database
         use_tools: Whether to use tool calling (future extension)
 
@@ -103,12 +102,14 @@ def create_prompt(question: str, db_path: str, use_tools: bool = False) -> str:
         # Future extension point for tool calling
         raise NotImplementedError("Tool calling mode not yet implemented")
 
+    question = question_data['question']
+    table_names = question_data.get('tables')
+
     # Simple mode: embed schema directly in prompt
-    schema = describe_database(db_path)
+    schema = describe_database(db_path, table_names=table_names)
 
-    prompt = f"""Given the following database schema, generate a SQL query to answer the question.
+    prompt = f"""Given the following schema, generate a SQL query to answer the question.
 
-Database Schema:
 {schema}
 
 Question: {question}
@@ -227,7 +228,7 @@ def run_evaluation(questions_file: str,
 
             try:
                 # Generate response with timing
-                prompt = create_prompt(question, db_path, use_tools)
+                prompt = create_prompt(question_data, db_path, use_tools)
 
                 response_start = time.time()
                 response = backends.generate_response(prompt, model, backend_name, use_tools, debug=False)
@@ -393,7 +394,17 @@ Examples:
             sys.exit(1)
 
         questions_file = str(dataset_path / 'questions.jsonl')
-        db_path = str(dataset_path / 'database.db')
+
+        # Auto-discover .db file in dataset directory
+        db_files = list(dataset_path.glob('*.db'))
+        if not db_files:
+            print(f"Error: No .db file found in {dataset_path}")
+            sys.exit(1)
+        if len(db_files) > 1:
+            print(f"Error: Multiple .db files found in {dataset_path}: {[f.name for f in db_files]}")
+            sys.exit(1)
+
+        db_path = str(db_files[0])
         dataset_name = args.dataset
     else:
         print("Error: Must specify either:")

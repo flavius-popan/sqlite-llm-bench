@@ -1,13 +1,13 @@
-{"question": "What is Alice's email address?", "sql": "SELECT email FROM users WHERE name = \"Alice\"", "table": "users"}
-{"question": "Which products cost more than 100?", "sql": "SELECT product FROM orders WHERE amount > 100", "table": "orders"}
-{"question": "How many users do we have?", "sql": "SELECT COUNT(*) FROM users", "table": "users"}
-{"question": "What products did Bob buy?", "sql": "SELECT o.product FROM orders o JOIN users u ON o.user_id = u.id WHERE u.name = \"Bob\"", "table": "orders"}
-{"question": "Which products has Alice ordered?", "sql": "SELECT DISTINCT o.product FROM users u JOIN orders o ON u.id = o.user_id WHERE u.name = 'Alice';", "table": "users"}
-{"question": "Who bought laptops?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.product = \"Laptop\"", "table": "users"}
-{"question": "Show customers and their products", "sql": "SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id", "table": "users"}
-{"question": "Which customer bought the most expensive item?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.amount = (SELECT MAX(amount) FROM orders)", "table": "users"}
-{"question": "How many orders does each customer have?", "sql": "SELECT u.name, COUNT(o.id) AS order_count FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name;", "table": "orders"}
-{"question": "What is the total of all orders?", "sql": "SELECT SUM(amount) FROM orders", "table": "orders"}
-{"question": "What is the average order amount?", "sql": "SELECT AVG(amount) FROM orders", "table": "orders"}
-{"question": "Who has orders over 500?", "sql": "SELECT name FROM users WHERE id IN (SELECT user_id FROM orders WHERE amount > 500)", "table": "users"}
-{"question": "What is the most expensive product?", "sql": "SELECT product FROM orders WHERE amount = (SELECT MAX(amount) FROM orders)", "table": "orders"}
+{"question": "What is Alice's email address?", "sql": "SELECT email FROM users WHERE name = \"Alice\"", "tables": ["users"], "database": "hello_world.db"}
+{"question": "Which products cost more than 100?", "sql": "SELECT product FROM orders WHERE amount > 100", "tables": ["orders"], "database": "hello_world.db"}
+{"question": "How many users do we have?", "sql": "SELECT COUNT(*) FROM users", "tables": ["users"], "database": "hello_world.db"}
+{"question": "What products did Bob buy?", "sql": "SELECT o.product FROM orders o JOIN users u ON o.user_id = u.id WHERE u.name = \"Bob\"", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "Which products has Alice ordered?", "sql": "SELECT DISTINCT o.product FROM users u JOIN orders o ON u.id = o.user_id WHERE u.name = 'Alice';", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "Who bought laptops?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.product = \"Laptop\"", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "Show customers and their products", "sql": "SELECT u.name, o.product FROM users u JOIN orders o ON u.id = o.user_id", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "Which customer bought the most expensive item?", "sql": "SELECT u.name FROM users u JOIN orders o ON u.id = o.user_id WHERE o.amount = (SELECT MAX(amount) FROM orders)", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "How many orders does each customer have?", "sql": "SELECT u.name, COUNT(o.id) AS order_count FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id, u.name;", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "What is the total of all orders?", "sql": "SELECT SUM(amount) FROM orders", "tables": ["orders"], "database": "hello_world.db"}
+{"question": "What is the average order amount?", "sql": "SELECT AVG(amount) FROM orders", "tables": ["orders"], "database": "hello_world.db"}
+{"question": "Who has orders over 500?", "sql": "SELECT name FROM users WHERE id IN (SELECT user_id FROM orders WHERE amount > 500)", "tables": ["users", "orders"], "database": "hello_world.db"}
+{"question": "What is the most expensive product?", "sql": "SELECT product FROM orders WHERE amount = (SELECT MAX(amount) FROM orders)", "tables": ["orders"], "database": "hello_world.db"}
