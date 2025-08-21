@@ -9,8 +9,9 @@ import json
 import sqlite3
 import sys
 import signal
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import os
 import requests
 from openai import OpenAI
@@ -277,6 +278,37 @@ def evaluate_response(expected_result: str, actual_result: str) -> bool:
     return expected_result.strip() == actual_result.strip()
 
 
+def calculate_performance_metrics(response_times: List[float], total_time: float) -> Dict[str, float]:
+    """Calculate performance metrics from timing data.
+
+    Args:
+        response_times: List of individual response times in seconds
+        total_time: Total evaluation time in seconds
+
+    Returns:
+        Dictionary with performance metrics
+    """
+    avg_per_response = sum(response_times) / len(response_times) if response_times else 0
+
+    return {
+        'total_time': round(total_time, 2),
+        'avg_per_response': round(avg_per_response, 2)
+    }
+
+
+def extract_model_name(model: str) -> str:
+    """Extract clean model name for directory structure.
+
+    Args:
+        model: Full model identifier (e.g., 'qwen/qwen3-30b-a3b-2507')
+
+    Returns:
+        Clean model name for directory (e.g., 'qwen3-30b-a3b-2507')
+    """
+    # Take last part after '/' and replace '@' with '_'
+    return model.split('/')[-1].replace('@', '_')
+
+
 def run_evaluation(questions_file: str,
                    db_path: str,
                    model: str,
@@ -299,6 +331,16 @@ def run_evaluation(questions_file: str,
     results = []
     correct = 0
     total = 0
+    response_times = []
+
+    # Count total questions
+    with open(questions_file, 'r') as f:
+        total_questions = sum(1 for _ in f)
+
+    print(f"Processing {total_questions} questions...")
+
+    # Start timing from first request
+    start_time = time.time()
 
     with open(questions_file, 'r') as f:
         for line in f:
@@ -306,17 +348,18 @@ def run_evaluation(questions_file: str,
             question = question_data['question']
             expected_sql = question_data['sql']
 
-            print(f"\nQuestion: {question}")
-
-            # Generate response
+            # Generate response with timing
             prompt = create_prompt(question, db_path, use_tools)
+
+            response_start = time.time()
             response = generate_response(prompt, model, client, backend_name, use_tools)
+            response_end = time.time()
+            response_times.append(response_end - response_start)
 
             # Extract SQL
             extracted_sql = extract_sql(response)
 
             if extracted_sql is None:
-                print("Failed to extract SQL from response")
                 results.append({
                     'question': question,
                     'expected_sql': expected_sql,
@@ -327,8 +370,6 @@ def run_evaluation(questions_file: str,
                 total += 1
                 continue
 
-            print(f"Generated SQL: {extracted_sql}")
-
             # Execute both queries
             expected_result = execute_sql(db_path, expected_sql)
             actual_result = execute_sql(db_path, extracted_sql)
@@ -337,11 +378,6 @@ def run_evaluation(questions_file: str,
             is_correct = evaluate_response(expected_result, actual_result)
             if is_correct:
                 correct += 1
-                print("✓ Correct")
-            else:
-                print("✗ Incorrect")
-                print(f"Expected: {expected_result}")
-                print(f"Actual: {actual_result}")
 
             results.append({
                 'question': question,
@@ -354,13 +390,28 @@ def run_evaluation(questions_file: str,
 
             total += 1
 
+    # End timing after last request
+    end_time = time.time()
+    total_time = end_time - start_time
+
     accuracy = correct / total if total > 0 else 0
-    print(f"\nResults: {correct}/{total} correct ({accuracy:.2%})")
+    failed = total - correct
+
+    # Calculate performance metrics
+    perf_metrics = calculate_performance_metrics(response_times, total_time)
+
+    print("\n=== EVALUATION RESULTS ===")
+    print(f"Accuracy:         {correct}/{total} ({accuracy:.2%})")
+    print(f"Total Runtime:    {perf_metrics['total_time']}s")
+    print(f"Avg Per Question: {perf_metrics['avg_per_response']}s")
+    print(f"Questions Failed: {failed}")
 
     return {
         'accuracy': accuracy,
         'correct': correct,
         'total': total,
+        'failed': failed,
+        'performance': perf_metrics,
         'results': results
     }
 
@@ -461,8 +512,7 @@ Examples:
     print(f"Questions: {questions_file}")
     print(f"Database: {db_path}")
     print(f"Model: {args.model}")
-    print(f"Backend: {backend_name} ({BACKENDS[backend_name]['base_url']})")
-    print()
+    print(f"Backend: {backend_name} ({BACKENDS[backend_name]['base_url']})\n")
 
     # Run evaluation
     results = run_evaluation(questions_file, db_path, args.model, client, backend_name, args.use_tools)
@@ -473,8 +523,8 @@ Examples:
     else:
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        model_name = args.model.replace('/', '_').replace('@', '_')
-        output_file = f"runs/results_{dataset_name}_{model_name}_{timestamp}.json"
+        model_name = extract_model_name(args.model)
+        output_file = f"runs/{model_name}/{timestamp}_{dataset_name}.json"
 
     # Create runs directory if it doesn't exist
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -482,7 +532,7 @@ Examples:
     # Save results
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=2)
-    print(f"Results saved to: {output_file}")
+    print(f"\nResults saved to: {output_file}")
 
 
 if __name__ == "__main__":
