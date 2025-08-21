@@ -92,7 +92,9 @@ def describe_database(db_path: str, table_name: Optional[str] = None) -> str:
             cursor.execute(f"PRAGMA table_info({table_name})")
             return "\n".join("|".join(str(col) for col in row) for row in cursor.fetchall())
         else:
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence'"
+            )
             tables = [row[0] for row in cursor.fetchall()]
             result = []
             for table in tables:
